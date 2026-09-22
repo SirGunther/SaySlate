@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Floating SaySlate</title>
+    <script src="theme.js"></script>
+    <link rel="stylesheet" href="floating.css" />
+  </head>
+  <body>
+    <main class="floating-slate">
+      <header class="floating-header">
+        <div class="brand-block">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 14.25a3.25 3.25 0 0 0 3.25-3.25V6.25a3.25 3.25 0 0 0-6.5 0V11A3.25 3.25 0 0 0 12 14.25Z"/><path d="M6.75 10.75V11a5.25 5.25 0 0 0 10.5 0v-.25M12 16.25v3M9.5 19.25h5"/></svg>
+          </span>
+          <div>
+            <strong>SaySlate</strong>
+            <span id="wordCount">0 words</span>
+          </div>
+        </div>
+        <div class="header-actions">
+          <span id="status" class="status" data-state="idle"><i></i><span id="statusText">Ready</span></span>
+          <button id="closeButton" class="header-button" type="button" aria-label="Close floating SaySlate" data-tooltip="Close without inserting&#10;Escape">
+            <svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <label class="sr-only" for="transcript">Floating transcript</label>
+      <textarea id="transcript" spellcheck="true" placeholder="Press Ctrl + Alt + D and start speaking…"></textarea>
+      <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+
+      <footer class="toolbar">
+        <div class="toolbar-group">
+          <button id="dictateButton" class="tool-button record" type="button" aria-label="Start dictating" data-tooltip="Start dictation&#10;Ctrl + Alt + D">
+            <svg class="mic-icon" viewBox="0 0 24 24"><path d="M12 14.25a3.25 3.25 0 0 0 3.25-3.25V6.25a3.25 3.25 0 0 0-6.5 0V11A3.25 3.25 0 0 0 12 14.25Z"/><path d="M6.75 10.75V11a5.25 5.25 0 0 0 10.5 0v-.25M12 16.25v3M9.5 19.25h5"/></svg>
+            <span class="stop-icon" aria-hidden="true"></span>
+          </button>
+          <button id="finishButton" class="tool-button finish" type="button" aria-label="Process and insert" data-tooltip="Process all enabled phases and insert&#10;Ctrl + Alt + F" disabled>
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8 12.2 2.6 2.6 5.6-6"/></svg>
+          </button>
+          <button id="chatGPTSubmitButton" class="tool-button chatgpt-submit" type="button" aria-label="Process, insert, and submit to ChatGPT" data-tooltip="Process all enabled phases, insert, and submit&#10;Ctrl + Alt + S" disabled hidden>
+            <svg viewBox="0 0 24 24"><path d="m4 4 16 8-16 8 3-8-3-8Z"/><path d="M7 12h13"/></svg>
+          </button>
+        </div>
+        <div class="toolbar-group toolbar-right">
+          <button id="firstPassButton" class="tool-button first" type="button" aria-label="Run first pass" data-tooltip="Run first pass&#10;Ctrl + Alt + G" disabled>
+            <svg viewBox="0 0 24 24"><path d="M12 3.5c.6 4.2 2.8 6.4 7 7-4.2.6-6.4 2.8-7 7-.6-4.2-2.8-6.4-7-7 4.2-.6 6.4-2.8 7-7Z"/><path d="M18.5 16.5c.2 1.5 1 2.3 2.5 2.5-1.5.2-2.3 1-2.5 2.5-.2-1.5-1-2.3-2.5-2.5 1.5-.2 2.3-1 2.5-2.5Z"/></svg>
+          </button>
+          <button id="secondPassButton" class="tool-button second" type="button" aria-label="Run second pass" data-tooltip="Run second pass&#10;Ctrl + Alt + E" disabled>
+            <svg viewBox="0 0 24 24"><path d="m5 19 9.5-9.5M13 5l1.5-1.5L20.5 9 19 10.5"/><path d="M6.5 4.5c.25 1.8 1.2 2.75 3 3-1.8.25-2.75 1.2-3 3-.25-1.8-1.2-2.75-3-3 1.8-.25 2.75-1.2 3-3Z"/></svg>
+          </button>
+          <button id="copyButton" class="tool-button" type="button" aria-label="Copy current text" data-tooltip="Copy current text&#10;Ctrl + Alt + C" disabled>
+            <svg viewBox="0 0 24 24"><rect x="8" y="8" width="10" height="11" rx="2"/><path d="M16 8V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h1"/></svg>
+          </button>
+          <button id="clearButton" class="tool-button" type="button" aria-label="Clear floating transcript" data-tooltip="Clear floating transcript&#10;Ctrl + Alt + X" disabled>
+            <svg viewBox="0 0 24 24"><path d="M5 7h14M9 7V5h6v2M8 10v7M12 10v7M16 10v7M7 7l1 13h8l1-13"/></svg>
+          </button>
+        </div>
+      </footer>
+    </main>
+    <script src="aiClient.js"></script>
+    <script src="dictationSettings.js"></script>
+    <script src="floatingSpeechClient.js"></script>
+    <script src="shortcutProtocol.js"></script>
+    <script src="floating.js"></script>
+  </body>
+</html>

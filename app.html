@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f7f7f5" />
+    <title>SaySlate</title>
+    <link rel="icon" href="icons/icon-32.png" />
+    <script src="theme.js"></script>
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="animations.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="topbar">
+        <a class="brand" href="app.html" aria-label="SaySlate home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" role="img">
+              <path d="M12 14.25a3.25 3.25 0 0 0 3.25-3.25V6.25a3.25 3.25 0 0 0-6.5 0V11A3.25 3.25 0 0 0 12 14.25Z" />
+              <path d="M6.75 10.75V11a5.25 5.25 0 0 0 10.5 0v-.25M12 16.25v3M9.5 19.25h5" />
+            </svg>
+          </span>
+          <span>SaySlate</span>
+        </a>
+
+        <div class="topbar-actions">
+          <div id="statusPill" class="status-pill" data-state="idle">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="statusText">Ready</span>
+          </div>
+          <button
+            id="themeToggle"
+            class="theme-toggle"
+            type="button"
+            aria-label="Light mode; switch to dark mode"
+            data-tooltip="Light mode · Switch to dark"
+          >
+            <svg class="sun-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3.5" />
+              <path d="M12 2.5v2M12 19.5v2M4.5 4.5l1.4 1.4M18.1 18.1l1.4 1.4M2.5 12h2M19.5 12h2M4.5 19.5l1.4-1.4M18.1 5.9l1.4-1.4" />
+            </svg>
+            <svg class="moon-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 15.2A8.1 8.1 0 0 1 8.8 4a8.1 8.1 0 1 0 11.2 11.2Z" />
+            </svg>
+          </button>
+          <button
+            id="apiSettingsToggle"
+            class="theme-toggle settings-toggle"
+            type="button"
+            aria-label="Open API key and model settings"
+            aria-expanded="false"
+            aria-controls="apiSettings"
+            data-tooltip="API key and model"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="8.5" cy="11.5" r="3.5" />
+              <path d="m11.5 9.5 7-7M16 5l2 2M14.2 7.8l2 2" />
+            </svg>
+            <span id="apiStatusDot" class="api-status-dot" aria-hidden="true"></span>
+          </button>
+          <button
+            id="promptToggle"
+            class="theme-toggle"
+            type="button"
+            aria-label="Open first-pass and second-pass prompts"
+            aria-expanded="false"
+            aria-controls="promptSettings"
+            data-tooltip="First-pass and second-pass prompts"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 4.5h9.5A2.5 2.5 0 0 1 18 7v10.5H8.5A2.5 2.5 0 0 1 6 15V4.5Z" />
+              <path d="M9 9h6M9 12h4" />
+              <path d="M18.5 3.5c.2 1.4.9 2.1 2.3 2.3-1.4.2-2.1.9-2.3 2.3-.2-1.4-.9-2.1-2.3-2.3 1.4-.2 2.1-.9 2.3-2.3Z" />
+            </svg>
+            <span id="promptStatusDot" class="api-status-dot" aria-hidden="true"></span>
+          </button>
+          <button
+            id="dictationProviderToggle"
+            class="theme-toggle settings-toggle"
+            type="button"
+            aria-label="Open dictation provider settings"
+            aria-expanded="false"
+            aria-controls="dictationProviderSettings"
+            data-tooltip="Dictation provider"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 15V9M10 18V6M14 18V6M18 15V9" />
+            </svg>
+            <span id="dictationProviderStatusDot" class="api-status-dot" aria-hidden="true"></span>
+          </button>
+
+          <aside id="apiSettings" class="settings-panel" aria-labelledby="apiSettingsTitle" hidden>
+            <div class="settings-header">
+              <div>
+                <p>CONNECTION</p>
+                <h2 id="apiSettingsTitle">API &amp; model</h2>
+              </div>
+              <button id="closeApiSettingsButton" class="panel-close" type="button" aria-label="Close API settings">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
+              </button>
+            </div>
+
+            <form id="apiSettingsForm">
+              <label class="field-label" for="apiKeyInput">Google AI API key</label>
+              <div class="secret-field">
+                <input id="apiKeyInput" class="text-surface" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your existing key" />
+                <button id="revealKeyButton" type="button" aria-label="Show API key" data-visible="false">
+                  <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.2-5 9-5 9 5 9 5-3.2 5-9 5-9-5Z" /><circle cx="12" cy="12" r="2.2" /></svg>
+                  <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 16M10.6 7.2A9.8 9.8 0 0 1 12 7c5.8 0 9 5 9 5a14 14 0 0 1-2.1 2.6M6.2 6.2C4.1 7.7 3 9.5 3 12c0 0 3.2 5 9 5 1.2 0 2.3-.2 3.2-.6" /></svg>
+                </button>
+              </div>
+              <p class="field-help">Stored only in SaySlate's private browser storage.</p>
+
+              <label class="field-label" for="modelInput">Model ID</label>
+              <input id="modelInput" class="settings-input text-surface" type="text" autocomplete="off" spellcheck="false" value="gemini-3.1-flash-lite" />
+              <p class="field-help">Gemini 3.1 Flash-Lite · Optimized for speed.</p>
+
+              <div id="apiSettingsError" class="settings-error" role="alert" hidden></div>
+
+              <div class="settings-footer">
+                <span id="configurationStatus" class="configuration-status">Not configured</span>
+                <button id="saveSettingsButton" class="button settings-save" type="submit">Save API</button>
+              </div>
+            </form>
+          </aside>
+
+          <aside id="promptSettings" class="settings-panel prompt-panel" aria-labelledby="promptSettingsTitle" hidden>
+            <div class="settings-header">
+              <div>
+                <p>WRITING BEHAVIOR</p>
+                <h2 id="promptSettingsTitle">AI prompts</h2>
+              </div>
+              <button id="closePromptSettingsButton" class="panel-close" type="button" aria-label="Close prompt settings">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
+              </button>
+            </div>
+
+            <form id="promptSettingsForm">
+              <label class="field-label" for="firstPassPromptInput">First-pass prompt</label>
+              <textarea
+                id="firstPassPromptInput"
+                class="settings-textarea prompt-textarea text-surface"
+                rows="5"
+                spellcheck="true"
+              ></textarea>
+              <p class="field-help">Applied to the original transcript and writes the initial lower-box result. No default or hidden instruction.</p>
+
+              <div class="pass-setting-header">
+                <label class="field-label" for="secondPassPromptInput">Second-pass prompt</label>
+                <label class="pass-toggle" for="secondPassEnabledInput">
+                  <span id="secondPassToggleState">Enabled</span>
+                  <input id="secondPassEnabledInput" type="checkbox" role="switch" aria-label="Enable second pass" />
+                  <span class="pass-toggle-track" aria-hidden="true"><span></span></span>
+                </label>
+              </div>
+              <textarea
+                id="secondPassPromptInput"
+                class="settings-textarea prompt-textarea text-surface"
+                rows="5"
+                spellcheck="true"
+              ></textarea>
+              <p class="field-help">Applied to the current lower-box text and replaces that result. Turning this pass off preserves its prompt and skips it in the finish workflow.</p>
+
+              <div id="promptSettingsError" class="settings-error" role="alert" hidden></div>
+
+              <div class="settings-footer">
+                <span id="promptConfigurationStatus" class="configuration-status">Second pass enabled</span>
+                <button id="savePromptSettingsButton" class="button settings-save" type="submit">Save prompts</button>
+              </div>
+            </form>
+          </aside>
+
+          <aside id="dictationProviderSettings" class="settings-panel dictation-provider-panel" aria-labelledby="dictationProviderSettingsTitle" hidden>
+            <div class="settings-header">
+              <div>
+                <p>DICTATION</p>
+                <h2 id="dictationProviderSettingsTitle">Dictation provider</h2>
+              </div>
+              <button id="closeDictationProviderSettingsButton" class="panel-close" type="button" aria-label="Close dictation provider settings">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
+              </button>
+            </div>
+
+            <form id="dictationSettingsForm">
+              <fieldset class="provider-choice">
+                <legend class="sr-only">Dictation provider</legend>
+                <label class="provider-option">
+                  <input type="radio" name="dictationProvider" id="dictationProviderBrowser" value="browser" />
+                  <span>Browser Dictation</span>
+                </label>
+                <label class="provider-option">
+                  <input type="radio" name="dictationProvider" id="dictationProviderLocalWhisper" value="local-whisper" />
+                  <span>Local Whisper</span>
+                </label>
+              </fieldset>
+
+              <div id="dictationAvailability" class="dictation-availability" data-state="checking" hidden>
+                <span class="dictation-availability-dot" aria-hidden="true"></span>
+                <span id="dictationAvailabilityText">Checking…</span>
+              </div>
+
+              <p class="field-label">WhisperService endpoint</p>
+              <p id="dictationEndpointValue" class="settings-static-value">http://127.0.0.1:8178</p>
+              <p class="field-help">Fixed to the local WhisperService address. Remote hosts are not supported.</p>
+
+              <label class="field-label" for="dictationTokenInput">Bearer token</label>
+              <input id="dictationTokenInput" class="settings-input text-surface" type="password" autocomplete="off" spellcheck="false" placeholder="Enter to add or replace the saved token" />
+              <p id="dictationTokenStatus" class="field-help">No token saved.</p>
+
+              <label class="field-label" for="dictationPreviewInput">Partial preview cadence</label>
+              <input id="dictationPreviewInput" type="range" min="1500" max="3000" step="100" value="2000" />
+              <p class="field-help"><span id="dictationPreviewValue">2000</span> ms · Range 1,500–3,000 ms</p>
+
+              <div id="dictationSettingsError" class="settings-error" role="alert" hidden></div>
+              <div id="dictationLockNotice" class="dictation-lock-notice" role="status" hidden>Dictation is active · Settings are locked</div>
+
+              <div class="settings-footer">
+                <span id="dictationConfigurationStatus" class="configuration-status">Browser Dictation selected</span>
+                <button id="saveDictationSettingsButton" class="button settings-save" type="submit">Save</button>
+              </div>
+            </form>
+          </aside>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="intro" aria-labelledby="pageTitle">
+          <p class="eyebrow">VOICE TO TEXT</p>
+          <h1 id="pageTitle">Speak. Capture. Done.</h1>
+          <p>Your words appear here as you talk—no chat, no clutter.</p>
+        </section>
+
+        <section class="slate" aria-label="Dictation workspace">
+          <div class="slate-header">
+            <div>
+              <h2>Transcript</h2>
+              <p id="wordCount">0 words</p>
+            </div>
+            <div id="listeningMeter" class="listening-meter" aria-hidden="true">
+              <span></span><span></span><span></span><span></span>
+            </div>
+          </div>
+
+          <label class="sr-only" for="transcript">Transcript</label>
+          <textarea
+            id="transcript"
+            class="text-surface"
+            spellcheck="true"
+            placeholder="Your words will appear here…"
+          ></textarea>
+
+          <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+          <div class="action-row">
+            <div class="dictation-actions">
+              <button
+                id="startButton"
+                class="button button-primary button-record icon-action"
+                type="button"
+                aria-label="Start dictating"
+                aria-pressed="false"
+                data-tooltip="Start dictation&#10;Ctrl + Alt + D"
+              >
+                <svg class="dictation-start-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 14.25a3.25 3.25 0 0 0 3.25-3.25V6.25a3.25 3.25 0 0 0-6.5 0V11A3.25 3.25 0 0 0 12 14.25Z" />
+                  <path d="M6.75 10.75V11a5.25 5.25 0 0 0 10.5 0v-.25M12 16.25v3M9.5 19.25h5" />
+                </svg>
+                <span class="stop-icon dictation-stop-icon" aria-hidden="true"></span>
+                <span id="startButtonLabel" class="sr-only">Start dictating</span>
+              </button>
+              <button
+                id="finishWorkflowButton"
+                class="button button-finish icon-action"
+                type="button"
+                aria-label="Finish, run both passes, copy, and clear everything"
+                data-tooltip="Stop → pass 1 → pass 2 → copy final → clear&#10;Ctrl + Alt + F"
+                disabled
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="8.5" />
+                  <path d="m8 12.2 2.6 2.6 5.6-6" />
+                </svg>
+                <span id="finishWorkflowLabel" class="sr-only">Finish, copy &amp; clear</span>
+              </button>
+            </div>
+
+            <div class="text-actions">
+              <button id="firstPassButton" class="button button-first icon-action" type="button" aria-label="Run first pass" data-tooltip="Run first pass&#10;Ctrl + Alt + G" disabled>
+                <svg class="first-pass-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 3.5c.6 4.2 2.8 6.4 7 7-4.2.6-6.4 2.8-7 7-.6-4.2-2.8-6.4-7-7 4.2-.6 6.4-2.8 7-7Z" />
+                  <path d="M18.5 16.5c.2 1.5 1 2.3 2.5 2.5-1.5.2-2.3 1-2.5 2.5-.2-1.5-1-2.3-2.5-2.5 1.5-.2 2.3-1 2.5-2.5Z" />
+                </svg>
+                <span id="firstPassLabel" class="sr-only">Run first pass</span>
+              </button>
+              <button id="copyButton" class="button button-quiet icon-action" type="button" aria-label="Copy transcript" data-tooltip="Copy transcript&#10;Ctrl + Alt + C" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="8" y="8" width="10" height="11" rx="2" />
+                  <path d="M16 8V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h1" />
+                </svg>
+                <span id="copyLabel" class="sr-only">Copy transcript</span>
+              </button>
+              <button id="clearButton" class="button button-quiet icon-action" type="button" aria-label="Clear everything" data-tooltip="Clear everything&#10;Ctrl + Alt + X" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M5 7h14M9 7V5h6v2M8 10v7M12 10v7M16 10v7M7 7l1 13h8l1-13" />
+                </svg>
+                <span class="sr-only">Clear everything</span>
+              </button>
+            </div>
+          </div>
+
+        </section>
+
+        <section id="resultSection" class="slate result-slate" aria-labelledby="resultTitle" hidden>
+          <div class="slate-header result-header">
+            <div>
+              <p class="result-kicker">AI RESULT</p>
+              <h2 id="resultTitle">Processed transcript</h2>
+              <p id="resultMeta">Ready to review</p>
+            </div>
+            <span class="result-badge">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6.5 12.5 3.5 3.5 7.5-8" /></svg>
+              Original preserved
+            </span>
+          </div>
+
+          <label class="sr-only" for="resultTranscript">Processed transcript</label>
+          <textarea id="resultTranscript" class="text-surface" spellcheck="true"></textarea>
+
+          <div class="result-actions">
+            <button id="secondPassButton" class="button button-second icon-action" type="button" aria-label="Run second pass" data-tooltip="Run second pass&#10;Ctrl + Alt + E">
+              <svg class="second-pass-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m5 19 9.5-9.5M13 5l1.5-1.5L20.5 9 19 10.5" />
+                <path d="M6.5 4.5c.25 1.8 1.2 2.75 3 3-1.8.25-2.75 1.2-3 3-.25-1.8-1.2-2.75-3-3 1.8-.25 2.75-1.2 3-3Z" />
+              </svg>
+              <span id="secondPassLabel" class="sr-only">Run second pass</span>
+            </button>
+            <button id="copyResultButton" class="button button-primary result-copy icon-action" type="button" aria-label="Copy processed transcript" data-tooltip="Copy result&#10;Ctrl + Alt + R">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="8" y="8" width="10" height="11" rx="2" />
+                <path d="M16 8V7a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h1" />
+              </svg>
+              <span class="sr-only">Copy processed transcript</span>
+            </button>
+            <button id="discardResultButton" class="button button-quiet icon-action" type="button" aria-label="Discard processed result" data-tooltip="Discard result">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 7h14M9 7V5h6v2M8 10v7M12 10v7M16 10v7M7 7l1 13h8l1-13" />
+              </svg>
+              <span class="sr-only">Discard processed result</span>
+            </button>
+          </div>
+        </section>
+
+        <p class="privacy-note">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M7 10V8a5 5 0 0 1 10 0v2M6 10h12v10H6z" />
+          </svg>
+          Dictation stays local. Running an AI pass sends the applicable text to your configured Google model.
+        </p>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true">
+      <span class="toast-check" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="m6.5 12.5 3.5 3.5 7.5-8" /></svg>
+      </span>
+      <span id="toastMessage">Copied to clipboard</span>
+    </div>
+
+    <script src="aiClient.js"></script>
+    <script src="speechEngine.js"></script>
+    <script src="animations.js"></script>
+    <script src="dictationSettings.js"></script>
+    <script src="dictationProviderPanel.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

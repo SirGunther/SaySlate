@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "SaySlate — Voice to Text",
+  "short_name": "SaySlate",
+  "version": "1.11.5",
+  "description": "A focused voice-to-text writing pad with two fully user-defined AI processing passes.",
+  "permissions": ["activeTab", "clipboardWrite", "offscreen", "scripting", "storage"],
+  "host_permissions": ["https://generativelanguage.googleapis.com/*", "http://127.0.0.1:8178/*"],
+  "action": {
+    "default_title": "Open SaySlate"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "toggle-floating-slate": {
+      "suggested_key": {
+        "default": "Alt+Shift+S"
+      },
+      "description": "Open or close Floating Slate"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["chatGPTAdapter.js", "shortcutProtocol.js", "floatingHost.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["floating.html"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}
