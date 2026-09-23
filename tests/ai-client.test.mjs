@@ -351,3 +351,90 @@ console.log("AI client success and provider-error paths verified.");
 
   console.log("generateStructured network-error mapping verified.");
 }
+
+{
+  // LD-039: the observed failure - HTTP 503 on the schema request - gets one schema-free
+  // retry (the original plain request) and the retry's free text is accepted.
+  let callCount = 0;
+  let retryBody;
+  const client = createClient(async (url, options) => {
+    callCount += 1;
+    if (callCount === 1) {
+      return { ok: false, status: 503, async json() { return { error: { message: "The model is overloaded. Please try again later." } }; } };
+    }
+    retryBody = JSON.parse(options.body);
+    return { ok: true, status: 200, async json() { return { candidates: [{ content: { parts: [{ text: " Recovered text. " }] } }] }; } };
+  });
+
+  const result = await client.generateStructured({
+    endpoint: "https://generativelanguage.googleapis.com/v1beta",
+    credential: "test-key-gemini",
+    modelId: "test-model",
+    systemPrompt: "",
+    userPrompt: "perform this pass",
+    schema: { type: "object", properties: { text: { type: "string" } } },
+    retryDelayMs: 0
+  });
+
+  assert.equal(callCount, 2, "a 503 must trigger exactly one retry");
+  assert.equal(result, "Recovered text.");
+  assert.ok(retryBody.generationConfig.responseJsonSchema === undefined, "the 503 retry must drop the schema");
+  assert.ok(retryBody.generationConfig.responseMimeType === undefined, "the 503 retry must drop the mime type");
+
+  console.log("generateStructured LD-039 503 schema-free retry verified.");
+}
+
+{
+  // LD-039: when the retry also fails, the error carries the status and the provider's own
+  // reason, with the credential redacted, and no third request is made.
+  let callCount = 0;
+  const client = createClient(async () => {
+    callCount += 1;
+    return { ok: false, status: 503, async json() { return { error: { message: "Overloaded for key secret-key-9 right now." } }; } };
+  });
+
+  await assert.rejects(
+    client.generateStructured({
+      endpoint: "https://generativelanguage.googleapis.com/v1beta",
+      credential: "secret-key-9",
+      modelId: "test-model",
+      systemPrompt: "",
+      userPrompt: "perform this pass",
+      schema: { type: "object", properties: { text: { type: "string" } } },
+      retryDelayMs: 0
+    }),
+    (error) =>
+      error.code === "provider_error" &&
+      error.message.includes("status 503") &&
+      error.message.includes("Overloaded") &&
+      !error.message.includes("secret-key-9")
+  );
+  assert.equal(callCount, 2, "a failed retry is final");
+
+  console.log("generateStructured LD-039 failed-retry detail and redaction verified.");
+}
+
+{
+  // LD-039: a 429 is not retried, but it now explains itself.
+  let callCount = 0;
+  const client = createClient(async () => {
+    callCount += 1;
+    return { ok: false, status: 429, async json() { return { error: { message: "Resource has been exhausted (e.g. check quota)." } }; } };
+  });
+
+  await assert.rejects(
+    client.generateStructured({
+      endpoint: "https://generativelanguage.googleapis.com/v1beta",
+      credential: "test-key-gemini",
+      modelId: "test-model",
+      systemPrompt: "",
+      userPrompt: "perform this pass",
+      schema: { type: "object", properties: { text: { type: "string" } } },
+      retryDelayMs: 0
+    }),
+    (error) => error.code === "provider_error" && error.message.includes("status 429") && error.message.includes("quota")
+  );
+  assert.equal(callCount, 1, "a 429 must not be retried");
+
+  console.log("generateStructured LD-039 429 detail (no retry) verified.");
+}

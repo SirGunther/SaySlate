@@ -485,7 +485,8 @@
       malformed_response: "The provider returned a response that did not match the expected shape.",
       request_timeout: `${passLabel} timed out. Please try again.`,
       network_error: "SaySlate could not reach the provider. Check your connection.",
-      provider_error: "The provider request failed. The existing text was preserved."
+      // LD-039: carry the adapter's bounded detail (status and the provider's own reason).
+      provider_error: `${error?.message || "The provider request failed."} The existing text was preserved.`
     };
     return messages[error?.code] || error?.message || `${passLabel} failed. The existing text was preserved.`;
   }
