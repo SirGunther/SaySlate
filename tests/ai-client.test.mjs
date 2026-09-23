@@ -92,10 +92,17 @@ console.log("AI client success and provider-error paths verified.");
   assert.equal(body.contents[0].parts[0].text, "perform this pass");
   assert.equal(body.generationConfig.temperature, 0.1);
   assert.equal(body.generationConfig.responseMimeType, "application/json");
+  // LD-036(1): the canonical schema rides on responseJsonSchema, never responseSchema -
+  // Gemini rejects responseSchema outright when it carries additionalProperties (EV-034(a)).
+  assert.deepEqual(
+    body.generationConfig.responseJsonSchema,
+    { type: "object", properties: { text: { type: "string" } }, required: ["text"] }
+  );
+  assert.ok(body.generationConfig.responseSchema === undefined, "responseSchema must never be sent");
   assert.ok(body.systemInstruction === undefined, "an empty systemPrompt must omit systemInstruction");
   assert.ok(!result.includes("test-key-gemini"), "the result must never contain the credential");
 
-  console.log("generateStructured native schema request and empty-systemPrompt omission verified.");
+  console.log("generateStructured native schema request (responseJsonSchema) and empty-systemPrompt omission verified.");
 }
 
 {
@@ -149,7 +156,9 @@ console.log("AI client success and provider-error paths verified.");
 }
 
 {
-  // Authentication failure maps to the bounded authentication_failed code.
+  // Generic HTTP status mapping (mapStatusToCode's 401/403 branch) - not Gemini's actual
+  // bad-key path. Gemini itself never returns 401/403 for an invalid key (EV-034(b));
+  // that path is covered separately below via the exact API_KEY_INVALID envelope.
   const client = createClient(async () => ({
     ok: false,
     status: 401,
@@ -170,12 +179,64 @@ console.log("AI client success and provider-error paths verified.");
     (error) => error.code === "authentication_failed" && !error.message.includes("test-key-gemini")
   );
 
-  console.log("generateStructured authentication-failure mapping verified.");
+  console.log("generateStructured generic 401 status mapping verified (not Gemini's actual bad-key shape).");
 }
 
 {
-  // LD-031: HTTP 400 on the schema request triggers exactly one schema-free retry;
-  // the retry response carries only free text (no JSON envelope) and must be accepted.
+  // LD-036(2)/EV-034(b): Gemini's actual invalid-key response is HTTP 400 INVALID_ARGUMENT
+  // with reason API_KEY_INVALID in error.details[] - this must be authentication_failed
+  // with exactly one fetch call (no LD-031 retry), and the message must not leak the key
+  // or the raw response body.
+  let callCount = 0;
+  const client = createClient(async () => {
+    callCount += 1;
+    return {
+      ok: false,
+      status: 400,
+      async json() {
+        return {
+          error: {
+            code: 400,
+            message: "API key not valid. Please pass a valid API key.",
+            status: "INVALID_ARGUMENT",
+            details: [
+              {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                reason: "API_KEY_INVALID",
+                domain: "googleapis.com",
+                metadata: { service: "generativelanguage.googleapis.com" }
+              }
+            ]
+          }
+        };
+      }
+    };
+  });
+
+  await assert.rejects(
+    client.generateStructured({
+      endpoint: "https://generativelanguage.googleapis.com/v1beta",
+      credential: "test-key-gemini-invalid",
+      modelId: "test-model",
+      systemPrompt: "",
+      userPrompt: "perform this pass",
+      schema: { type: "object", properties: { text: { type: "string" } } }
+    }),
+    (error) =>
+      error.code === "authentication_failed" &&
+      !error.message.includes("test-key-gemini-invalid") &&
+      !error.message.includes("API key not valid")
+  );
+
+  assert.equal(callCount, 1, "an invalid-key response must never trigger the LD-031 retry");
+
+  console.log("generateStructured EV-034(b)/LD-036(2) API_KEY_INVALID mapping (no retry) verified.");
+}
+
+{
+  // LD-031: a genuine schema-rejection HTTP 400 (no API_KEY_INVALID reason) on the
+  // schema request triggers exactly one schema-free retry; the retry response carries
+  // only free text (no JSON envelope) and must be accepted.
   let callCount = 0;
   let retryBody;
   const client = createClient(async (url, options) => {
@@ -210,10 +271,11 @@ console.log("AI client success and provider-error paths verified.");
 
   assert.equal(callCount, 2);
   assert.equal(result, "Plain retried text.");
-  assert.ok(retryBody.generationConfig.responseSchema === undefined, "the retry must drop the schema");
+  assert.ok(retryBody.generationConfig.responseJsonSchema === undefined, "the retry must drop responseJsonSchema");
+  assert.ok(retryBody.generationConfig.responseSchema === undefined, "the retry must never send responseSchema");
   assert.ok(retryBody.generationConfig.responseMimeType === undefined, "the retry must drop the response mime type");
 
-  console.log("generateStructured LD-031 schema-free retry verified.");
+  console.log("generateStructured LD-031 schema-free retry (genuine schema rejection) verified.");
 }
 
 {

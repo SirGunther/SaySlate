@@ -79,10 +79,22 @@
     return error;
   }
 
+  // Generic HTTP status mapping. Gemini itself does not use 401/403 for a bad key
+  // (EV-034(b)); those statuses are kept here only for any other status Gemini or a
+  // future transport might return, not as Gemini's actual bad-key path (see
+  // isApiKeyInvalid below for that).
   function mapStatusToCode(status) {
     if (status === 401 || status === 403) return "authentication_failed";
     if (status === 404) return "model_unavailable";
     return "provider_error";
+  }
+
+  // LD-036(2): Gemini reports an invalid API key as HTTP 400 INVALID_ARGUMENT with a
+  // structured reason, not as 401/403 (EV-034(b)). Detecting this before the LD-031
+  // schema-free retry keeps a bad key from being silently retried and misclassified.
+  function isApiKeyInvalid(body) {
+    const details = Array.isArray(body?.error?.details) ? body.error.details : [];
+    return details.some((detail) => detail?.reason === "API_KEY_INVALID");
   }
 
   function validateCanonicalText(rawText) {
@@ -136,10 +148,13 @@
     try {
       const contents = [{ role: "user", parts: [{ text: userPrompt }] }];
       // LD-035 (4): keeps today's key-in-URL request and temperature 0.1 (LD-015),
-      // adding only the native JSON-schema generation config.
+      // adding only the native JSON-schema generation config. LD-036(1): the canonical
+      // schema is sent as responseJsonSchema, never responseSchema - the canonical
+      // schema's additionalProperties field makes Gemini reject responseSchema outright
+      // (EV-034(a)), which silently fell through to the LD-031 retry on every request.
       const schemaBody = {
         contents,
-        generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseSchema: schema }
+        generationConfig: { temperature: 0.1, responseMimeType: "application/json", responseJsonSchema: schema }
       };
       if (systemPrompt) schemaBody.systemInstruction = { parts: [{ text: systemPrompt }] };
 
@@ -160,6 +175,14 @@
 
       if (!response.ok) {
         if (response.status === 400 || response.status === 422) {
+          // LD-036(2): a 400 carrying reason API_KEY_INVALID is an authentication
+          // failure, not a schema rejection - fail here, before any retry, so a bad
+          // key is never retried or misclassified as a schema-unsupported model.
+          const errorBody = await parseJsonBody(response);
+          if (isApiKeyInvalid(errorBody)) {
+            throw boundedError("authentication_failed", "The Google AI API key was rejected.");
+          }
+
           // LD-031: exactly one schema-free retry; only a trimmed, non-empty text reply
           // is accepted. The retry's outcome is final.
           const retryBody = { contents, generationConfig: { temperature: 0.1 } };
