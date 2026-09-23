@@ -39,6 +39,14 @@ const EXPECTED_HOST_PERMISSIONS = ["https://generativelanguage.googleapis.com/*"
 if (JSON.stringify(manifest.host_permissions) !== JSON.stringify(EXPECTED_HOST_PERMISSIONS)) {
   throw new Error("Manifest host permissions must grant only the Google Generative Language API and the fixed WhisperService loopback origin.");
 }
+// LD-017/LD-024: custom-provider HTTPS origins (e.g. a private Tailscale/LM Studio
+// endpoint) are optional and requested for the exact configured origin at runtime, never
+// as a required install-time host. This is the one permitted optional-host declaration -
+// no other optional host may be added alongside it.
+const EXPECTED_OPTIONAL_HOST_PERMISSIONS = ["https://*/*"];
+if (JSON.stringify(manifest.optional_host_permissions) !== JSON.stringify(EXPECTED_OPTIONAL_HOST_PERMISSIONS)) {
+  throw new Error("Manifest must declare exactly the intentional optional HTTPS host permission for custom provider origins.");
+}
 
 const html = read("app.html");
 const script = read("app.js");
@@ -58,6 +66,8 @@ const offscreenSpeech = read("offscreenSpeech.js");
 const backgroundScript = read("background.js");
 const themeScript = read("theme.js");
 const aiClient = read("aiClient.js");
+const aiProviderRegistry = read("aiProviderRegistry.js");
+const aiProviderPermissions = read("aiProviderPermissions.js");
 const whisperServiceClient = read("whisperServiceClient.js");
 const dictationSettings = read("dictationSettings.js");
 const dictationProviderPanel = read("dictationProviderPanel.js");
@@ -86,6 +96,8 @@ const requiredFiles = [
   "offscreen.html",
   "offscreenSpeech.js",
   "aiClient.js",
+  "aiProviderRegistry.js",
+  "aiProviderPermissions.js",
   "theme.js",
   "whisperServiceClient.js",
   "micCapture.js",
@@ -95,6 +107,8 @@ const requiredFiles = [
   "dictationProviderPanel.js",
   "tests/animations.test.mjs",
   "tests/ai-client.test.mjs",
+  "tests/ai-provider-registry.test.mjs",
+  "tests/ai-provider-permissions.test.mjs",
   "tests/speech-engine.test.mjs",
   "tests/background-routing.test.mjs",
   "tests/shortcut-protocol.test.mjs",
@@ -500,5 +514,43 @@ if (!whisperServiceClient.includes("function redactToken") || !whisperServiceCli
   throw new Error("The WhisperService client is missing token redaction or its narrow global API.");
 }
 
+// ---- SAYAI-02: provider registry and optional-origin permission boundary checks ----
+
+if (
+  !aiProviderRegistry.includes("globalThis.SaySlateAIProviderRegistry") ||
+  !aiProviderRegistry.includes("presetFor") ||
+  !aiProviderRegistry.includes("normalizeEndpoint") ||
+  !aiProviderRegistry.includes("originPatternForEndpoint")
+) {
+  throw new Error("The AI provider registry is missing its required public boundary.");
+}
+if (!aiProviderRegistry.includes('protocol !== "https:"')) {
+  throw new Error("Endpoint normalization must reject non-HTTPS schemes.");
+}
+for (const rejectionCheck of ["url.username || url.password", "url.search", "url.hash"]) {
+  if (!aiProviderRegistry.includes(rejectionCheck)) {
+    throw new Error(`Endpoint normalization is missing a required rejection: ${rejectionCheck}`);
+  }
+}
+
+if (
+  !aiProviderPermissions.includes("globalThis.SaySlateAIProviderPermissions") ||
+  !aiProviderPermissions.includes("function ensureForEndpoint") ||
+  !aiProviderPermissions.includes("function hasForEndpoint")
+) {
+  throw new Error("The AI provider permissions module is missing its required public boundary.");
+}
+if (aiProviderPermissions.includes("chrome.permissions.request") && !aiProviderPermissions.includes("async function ensureForEndpoint")) {
+  throw new Error("Only ensureForEndpoint may call chrome.permissions.request.");
+}
+if (!aiProviderPermissions.includes("already_granted") || !aiProviderPermissions.includes("permission_denied") || !aiProviderPermissions.includes("invalid_configuration")) {
+  throw new Error("The permission result codes required by LD-034 are incomplete.");
+}
+const hasForEndpointFunction = aiProviderPermissions.match(/async function hasForEndpoint\([^)]*\) \{([\s\S]*?)\n  \}/)?.[1] || "";
+if (hasForEndpointFunction.includes("requestOrigin(") || hasForEndpointFunction.includes("chrome.permissions.request")) {
+  throw new Error("hasForEndpoint must never request a permission - it is a read-only check.");
+}
+
 console.log("Manifest, assets, and DOM references verified.");
 console.log("Local Whisper least-privilege permission, token isolation, and provider wiring verified.");
+console.log("AI provider registry and optional-origin permission boundary verified.");

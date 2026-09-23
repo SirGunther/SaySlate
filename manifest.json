@@ -6,6 +6,7 @@
   "description": "A focused voice-to-text writing pad with two fully user-defined AI processing passes.",
   "permissions": ["activeTab", "clipboardWrite", "offscreen", "scripting", "storage"],
   "host_permissions": ["https://generativelanguage.googleapis.com/*", "http://127.0.0.1:8178/*"],
+  "optional_host_permissions": ["https://*/*"],
   "action": {
     "default_title": "Open SaySlate"
   },
