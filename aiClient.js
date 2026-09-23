@@ -118,34 +118,9 @@
     }
   }
 
-  // LD-039: a Gemini 5xx (e.g. 503 "model overloaded") on the schema request gets the same
-  // single schema-free retry as a 400/422, after this pause.
-  const SERVER_ERROR_RETRY_DELAY_MS = 1_000;
   const PROVIDER_DETAIL_MAX_LENGTH = 200;
 
-  function isServerError(status) {
-    return status >= 500 && status <= 599;
-  }
-
-  function waitBeforeRetry(ms, signal) {
-    return new Promise((resolve, reject) => {
-      if (signal.aborted) {
-        reject(boundedError("request_timeout", "The AI request timed out."));
-        return;
-      }
-      const onAbort = () => {
-        window.clearTimeout(timer);
-        reject(boundedError("request_timeout", "The AI request timed out."));
-      };
-      const timer = window.setTimeout(() => {
-        signal.removeEventListener("abort", onAbort);
-        resolve();
-      }, ms);
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
-  }
-
-  // LD-039: Google's own error text, bounded and with the credential redacted, so a failure
+  // LD-039/LD-040: Google's own error text, bounded and with the credential redacted, so a failure
   // explains itself the way the original `generate` path always did (`body.error.message`).
   function failureMessage(status, body, credential) {
     let detail = typeof body?.error?.message === "string" ? body.error.message.replace(/\s+/g, " ").trim() : "";
@@ -174,8 +149,7 @@
     schema,
     fetchImpl,
     timeoutMs = DEFAULT_TIMEOUT_MS,
-    signal,
-    retryDelayMs = SERVER_ERROR_RETRY_DELAY_MS
+    signal
   }) {
     const timeoutController = new AbortController();
     const timeout = window.setTimeout(() => timeoutController.abort(), timeoutMs);
@@ -211,7 +185,7 @@
       }
 
       if (!response.ok) {
-        if (response.status === 400 || response.status === 422 || isServerError(response.status)) {
+        if (response.status === 400 || response.status === 422) {
           // LD-036(2): a 400 carrying reason API_KEY_INVALID is an authentication
           // failure, not a schema rejection - fail here, before any retry, so a bad
           // key is never retried or misclassified as a schema-unsupported model.
@@ -219,10 +193,6 @@
           if (isApiKeyInvalid(errorBody)) {
             throw boundedError("authentication_failed", "The Google AI API key was rejected.");
           }
-
-          // LD-039: pause before retrying a server error, so an overloaded model has a
-          // moment to recover; an abort during the pause is still a timeout.
-          if (isServerError(response.status)) await waitBeforeRetry(retryDelayMs, timeoutController.signal);
 
           // LD-031: exactly one schema-free retry; only a trimmed, non-empty text reply
           // is accepted. The retry's outcome is final.
