@@ -540,14 +540,44 @@ if (
 ) {
   throw new Error("The AI provider permissions module is missing its required public boundary.");
 }
-if (aiProviderPermissions.includes("chrome.permissions.request") && !aiProviderPermissions.includes("async function ensureForEndpoint")) {
-  throw new Error("Only ensureForEndpoint may call chrome.permissions.request.");
+// F2: the previous guard here ("chrome.permissions.request" present && no
+// "async function ensureForEndpoint") could never fail while ensureForEndpoint exists at
+// all, regardless of where chrome.permissions.request was actually called from. Assert
+// the real structural boundary instead: chrome.permissions.request must appear only
+// inside requestOrigin's body, and requestOrigin( must be called only from inside
+// ensureForEndpoint's body.
+const requestOriginFunction = aiProviderPermissions.match(/function requestOrigin\([^)]*\) \{([\s\S]*?)\n  \}/)?.[1] || "";
+if (!requestOriginFunction.includes("chrome.permissions.request(")) {
+  throw new Error("requestOrigin must call chrome.permissions.request.");
+}
+const permissionsWithoutRequestOriginBody = aiProviderPermissions.replace(
+  /function requestOrigin\([^)]*\) \{[\s\S]*?\n  \}/,
+  ""
+);
+// Match only the actual call site ("...request(") rather than the bare API name, so a
+// descriptive comment or error-message string mentioning chrome.permissions.request in
+// prose (neither of which is followed by an opening paren) is not mistaken for a call.
+if (permissionsWithoutRequestOriginBody.includes("chrome.permissions.request(")) {
+  throw new Error("chrome.permissions.request must be called only from inside requestOrigin.");
+}
+const ensureForEndpointFunction = aiProviderPermissions.match(/async function ensureForEndpoint\([^)]*\) \{([\s\S]*?)\n  \}/)?.[1] || "";
+if (!ensureForEndpointFunction.includes("requestOrigin(")) {
+  throw new Error("ensureForEndpoint must call requestOrigin.");
+}
+// Start from the text with requestOrigin's own declaration/body already removed, so its
+// declaration line ("function requestOrigin(...")) is not mistaken for a call site.
+const permissionsWithoutEnsureForEndpointBody = permissionsWithoutRequestOriginBody.replace(
+  /async function ensureForEndpoint\([^)]*\) \{[\s\S]*?\n  \}/,
+  ""
+);
+if (permissionsWithoutEnsureForEndpointBody.includes("requestOrigin(")) {
+  throw new Error("requestOrigin must be called only from inside ensureForEndpoint.");
 }
 if (!aiProviderPermissions.includes("already_granted") || !aiProviderPermissions.includes("permission_denied") || !aiProviderPermissions.includes("invalid_configuration")) {
   throw new Error("The permission result codes required by LD-034 are incomplete.");
 }
 const hasForEndpointFunction = aiProviderPermissions.match(/async function hasForEndpoint\([^)]*\) \{([\s\S]*?)\n  \}/)?.[1] || "";
-if (hasForEndpointFunction.includes("requestOrigin(") || hasForEndpointFunction.includes("chrome.permissions.request")) {
+if (hasForEndpointFunction.includes("requestOrigin(") || hasForEndpointFunction.includes("chrome.permissions.request(")) {
   throw new Error("hasForEndpoint must never request a permission - it is a read-only check.");
 }
 
