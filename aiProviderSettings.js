@@ -6,6 +6,8 @@
   // EV-002: the pre-existing combined Gemini record this module migrates away from.
   const LEGACY_CONFIG_KEY = "sayslate-grammar-config";
   const SCHEMA_VERSION = 1;
+  // LD-024/LD-033: the Gemini preset base URL a migrated profile must carry.
+  const GEMINI_PRESET_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta";
 
   const CREDENTIAL_ACTIONS = Object.freeze({
     RETAIN: "retain",
@@ -14,46 +16,36 @@
   });
   const CREDENTIAL_ACTION_VALUES = new Set(Object.values(CREDENTIAL_ACTIONS));
 
+  // F5: credentials must live only in chrome.storage.local. There is no other browser
+  // storage fallback here - when the extension storage API is unavailable, every
+  // operation rejects instead of silently persisting (and possibly losing, since it
+  // swallowed write errors) a second, unauthorized credential store.
   function storageGet(key) {
-    if (globalThis.chrome?.storage?.local) {
-      return new Promise((resolve, reject) => {
-        chrome.storage.local.get(key, (result) => {
-          const error = chrome.runtime?.lastError;
-          if (error) reject(new Error(error.message));
-          else resolve(result?.[key]);
-        });
+    if (!globalThis.chrome?.storage?.local) {
+      return Promise.reject(new Error("chrome.storage.local is required for AI provider profile storage."));
+    }
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.get(key, (result) => {
+        const error = chrome.runtime?.lastError;
+        if (error) reject(new Error(error.message));
+        else resolve(result?.[key]);
       });
-    }
-
-    try {
-      const value = globalThis.localStorage?.getItem(key);
-      return Promise.resolve(value ? JSON.parse(value) : undefined);
-    } catch {
-      return Promise.resolve(undefined);
-    }
+    });
   }
 
   // LD-030: the migration writes the new profile and rewrites the legacy record in one
   // chrome.storage.local.set call, so partial-write states never expose a copied credential.
   function storageSetEntries(entries) {
-    if (globalThis.chrome?.storage?.local) {
-      return new Promise((resolve, reject) => {
-        chrome.storage.local.set(entries, () => {
-          const error = chrome.runtime?.lastError;
-          if (error) reject(new Error(error.message));
-          else resolve();
-        });
+    if (!globalThis.chrome?.storage?.local) {
+      return Promise.reject(new Error("chrome.storage.local is required for AI provider profile storage."));
+    }
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.set(entries, () => {
+        const error = chrome.runtime?.lastError;
+        if (error) reject(new Error(error.message));
+        else resolve();
       });
-    }
-
-    try {
-      for (const [key, value] of Object.entries(entries)) {
-        globalThis.localStorage?.setItem(key, JSON.stringify(value));
-      }
-    } catch {
-      // Best-effort persistence outside the extension storage context.
-    }
-    return Promise.resolve();
+    });
   }
 
   function generateId() {
@@ -107,55 +99,84 @@
     return { version: SCHEMA_VERSION, activeProfileId: null, profiles: [] };
   }
 
-  let currentState = defaultState();
+  function findProfile(state, id) {
+    return state.profiles.find((profile) => profile.id === id) || null;
+  }
+
   let loaded = false;
-
-  async function persistState(nextState) {
-    await storageSetEntries({ [STORAGE_KEY]: nextState });
-    currentState = nextState;
-  }
-
-  // LD-023: an unsupported or malformed stored version must fail without overwriting
-  // storage - only an absent record (first run) is initialized and persisted here.
-  async function load() {
-    const stored = await storageGet(STORAGE_KEY);
-    if (stored === undefined) {
-      await persistState(defaultState());
-      loaded = true;
-      return cloneState(currentState);
-    }
-
-    if (!isValidState(stored)) {
-      throw new Error("Stored AI provider profile data is an unsupported or malformed version.");
-    }
-
-    currentState = stored;
-    loaded = true;
-    return cloneState(currentState);
-  }
 
   function ensureLoaded() {
     if (!loaded) throw new Error("Call load() before reading or changing AI provider profiles.");
   }
 
-  function findProfile(id) {
-    return currentState.profiles.find((profile) => profile.id === id) || null;
+  // F4: this is the single read path every mutator uses immediately before it computes
+  // its write. Nothing here is served from a module-level cache, so a second module
+  // instance (a second open SaySlate tab/page - background.js opens a new tab per
+  // action click) can never overwrite profiles or the active selection that a
+  // concurrently-running instance already persisted, because every mutation starts
+  // from what is actually in storage right now, not from what this instance last saw.
+  // An absent record is a legitimate "nothing persisted yet" state (first run, or a
+  // mutation racing ahead of load()'s own first write) and resolves to the default
+  // state rather than being treated as malformed; an unsupported/malformed *present*
+  // record still rejects without writing, per LD-023.
+  async function fetchValidatedState() {
+    const stored = await storageGet(STORAGE_KEY);
+    if (stored === undefined) return defaultState();
+    if (!isValidState(stored)) {
+      throw new Error("Stored AI provider profile data is an unsupported or malformed version.");
+    }
+    return stored;
   }
 
-  // LD-023: create-or-update with explicit retain/replace/clear credential actions so a
-  // blank field never implicitly deletes a saved credential (REQ-003).
+  async function persistState(nextState) {
+    await storageSetEntries({ [STORAGE_KEY]: nextState });
+    return nextState;
+  }
+
+  async function load() {
+    const stored = await storageGet(STORAGE_KEY);
+    let state;
+    if (stored === undefined) {
+      state = await persistState(defaultState());
+    } else if (!isValidState(stored)) {
+      throw new Error("Stored AI provider profile data is an unsupported or malformed version.");
+    } else {
+      state = stored;
+    }
+    loaded = true;
+    return cloneState(state);
+  }
+
+  // LD-023: create-or-update. F3: the credential action is never inferred - a missing
+  // or unknown action, or a `replace` with a blank credential, is rejected before any
+  // read-for-write or storage.set happens, so a blank field can never implicitly erase
+  // a saved key. Only `clear` (directly, or via clearCredential) blanks a credential.
   async function upsertProfile({ id, name, providerKind, endpoint, modelId, credential, credentialAction } = {}) {
     ensureLoaded();
 
-    const action = CREDENTIAL_ACTION_VALUES.has(credentialAction) ? credentialAction : CREDENTIAL_ACTIONS.REPLACE;
-    const existing = id ? findProfile(id) : null;
-    const resolvedId = existing ? existing.id : generateId();
+    if (!CREDENTIAL_ACTION_VALUES.has(credentialAction)) {
+      throw new Error("upsertProfile requires an explicit credentialAction of retain, replace, or clear.");
+    }
 
     let resolvedCredential;
-    if (action === CREDENTIAL_ACTIONS.CLEAR) resolvedCredential = "";
-    else if (action === CREDENTIAL_ACTIONS.RETAIN) resolvedCredential = existing ? existing.credential : "";
-    else resolvedCredential = String(credential ?? "").trim();
+    if (credentialAction === CREDENTIAL_ACTIONS.CLEAR) {
+      resolvedCredential = "";
+    } else if (credentialAction === CREDENTIAL_ACTIONS.REPLACE) {
+      resolvedCredential = String(credential ?? "").trim();
+      if (!resolvedCredential) {
+        throw new Error("A replace credential action requires a non-empty credential.");
+      }
+    }
+    // RETAIN resolves below, once the existing stored credential (if any) is known.
 
+    const state = await fetchValidatedState();
+    const existing = id ? findProfile(state, id) : null;
+
+    if (credentialAction === CREDENTIAL_ACTIONS.RETAIN) {
+      resolvedCredential = existing ? existing.credential : "";
+    }
+
+    const resolvedId = existing ? existing.id : generateId();
     const nextProfile = {
       id: resolvedId,
       name: String(name ?? existing?.name ?? "").trim(),
@@ -168,12 +189,12 @@
     if (!nextProfile.providerKind) throw new Error("A provider profile requires a providerKind.");
 
     const nextProfiles = existing
-      ? currentState.profiles.map((profile) => (profile.id === resolvedId ? nextProfile : profile))
-      : [...currentState.profiles, nextProfile];
+      ? state.profiles.map((profile) => (profile.id === resolvedId ? nextProfile : profile))
+      : [...state.profiles, nextProfile];
 
     await persistState({
       version: SCHEMA_VERSION,
-      activeProfileId: currentState.activeProfileId,
+      activeProfileId: state.activeProfileId,
       profiles: nextProfiles
     });
 
@@ -182,42 +203,39 @@
 
   async function activateProfile(id) {
     ensureLoaded();
-    if (!findProfile(id)) throw new Error("Cannot activate an unknown provider profile.");
+    const state = await fetchValidatedState();
+    if (!findProfile(state, id)) throw new Error("Cannot activate an unknown provider profile.");
 
-    await persistState({
-      version: SCHEMA_VERSION,
-      activeProfileId: id,
-      profiles: currentState.profiles
-    });
-
-    return cloneState(currentState);
+    const nextState = { version: SCHEMA_VERSION, activeProfileId: id, profiles: state.profiles };
+    await persistState(nextState);
+    return cloneState(nextState);
   }
 
   // LD-023: deleting the active profile leaves no active profile rather than reassigning one.
   async function deleteProfile(id) {
     ensureLoaded();
-    const nextProfiles = currentState.profiles.filter((profile) => profile.id !== id);
-    const nextActiveProfileId = currentState.activeProfileId === id ? null : currentState.activeProfileId;
+    const state = await fetchValidatedState();
+    const nextProfiles = state.profiles.filter((profile) => profile.id !== id);
+    const nextActiveProfileId = state.activeProfileId === id ? null : state.activeProfileId;
 
-    await persistState({
-      version: SCHEMA_VERSION,
-      activeProfileId: nextActiveProfileId,
-      profiles: nextProfiles
-    });
-
-    return cloneState(currentState);
+    const nextState = { version: SCHEMA_VERSION, activeProfileId: nextActiveProfileId, profiles: nextProfiles };
+    await persistState(nextState);
+    return cloneState(nextState);
   }
 
   async function clearCredential(id) {
     ensureLoaded();
-    if (!findProfile(id)) throw new Error("Cannot clear the credential of an unknown provider profile.");
+    const state = await fetchValidatedState();
+    if (!findProfile(state, id)) throw new Error("Cannot clear the credential of an unknown provider profile.");
     return upsertProfile({ id, credentialAction: CREDENTIAL_ACTIONS.CLEAR });
   }
 
-  // LD-030: move (not copy) the legacy Gemini key/model into one profile, in the same write
-  // that strips them from the legacy record - so an already-migrated legacy record (neither
-  // field present) is itself the idempotency signal, and a deleted/credential-cleared
-  // migrated profile is never recreated by running this again.
+  // LD-030/LD-033: move (not copy) the legacy Gemini key/model into one profile carrying
+  // the Gemini preset endpoint, in the same write that strips them from the legacy
+  // record - so an already-migrated legacy record (neither field present) is itself the
+  // idempotency signal, and a deleted/credential-cleared migrated profile is never
+  // recreated by running this again. When no profile is active, the migrated profile
+  // becomes active in that same write; an existing active selection is left alone.
   async function migrateLegacyConfig() {
     ensureLoaded();
 
@@ -226,19 +244,21 @@
     const legacyModel = String(legacy?.model || "").trim();
     if (!legacyApiKey && !legacyModel) return null;
 
+    const state = await fetchValidatedState();
+
     const newProfile = {
       id: generateId(),
       name: "Gemini",
       providerKind: "gemini",
-      endpoint: "",
+      endpoint: GEMINI_PRESET_ENDPOINT,
       modelId: legacyModel,
       credential: legacyApiKey
     };
 
     const nextState = {
       version: SCHEMA_VERSION,
-      activeProfileId: currentState.activeProfileId,
-      profiles: [...currentState.profiles, newProfile]
+      activeProfileId: state.activeProfileId || newProfile.id,
+      profiles: [...state.profiles, newProfile]
     };
 
     const nextLegacy = { ...legacy };
@@ -246,7 +266,6 @@
     delete nextLegacy.model;
 
     await storageSetEntries({ [STORAGE_KEY]: nextState, [LEGACY_CONFIG_KEY]: nextLegacy });
-    currentState = nextState;
 
     return cloneProfile(newProfile);
   }

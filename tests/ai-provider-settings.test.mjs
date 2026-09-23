@@ -8,9 +8,16 @@ import { randomUUID } from "node:crypto";
 const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = fs.readFileSync(path.join(extensionRoot, "aiProviderSettings.js"), "utf8");
 
+const GEMINI_PRESET_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta";
+
+// F5: credentials must live only in chrome.storage.local - the module must not carry a
+// second, silent credential store. Guard against reintroducing that fallback.
+assert.ok(!source.includes("localStorage"), "aiProviderSettings.js must not reference localStorage");
+
 // A shared in-memory chrome.storage.local fake so multiple "module loads" (fresh vm
-// contexts, matching a real page reload) observe the same persisted records - this is
-// the realistic storage fake EV-031's harness pattern calls for.
+// contexts, matching a real page reload, or a second concurrently open SaySlate tab)
+// observe the same persisted records - this is the realistic storage fake EV-031's
+// harness pattern calls for.
 function createStorage(initial = {}) {
   const backing = { ...initial };
   const setCalls = [];
@@ -172,7 +179,7 @@ function createModule(chrome) {
   console.log("Malformed stored version rejection verified.");
 }
 
-// ---- Scenario 4: legacy Gemini migration, idempotency, and LD-030 move semantics ----
+// ---- Scenario 4: legacy Gemini migration, preset endpoint, activation, and idempotency ----
 
 {
   const legacyConfig = {
@@ -192,9 +199,14 @@ function createModule(chrome) {
   assert.equal(firstMigration.providerKind, "gemini");
   assert.equal(firstMigration.modelId, "gemini-3.1-flash-lite");
   assert.equal(firstMigration.credential, "test-key-legacy-gemini");
+  // F1: the migrated profile must carry the Gemini preset endpoint (LD-024/LD-033).
+  assert.equal(firstMigration.endpoint, GEMINI_PRESET_ENDPOINT);
 
   const stateAfterFirst = storage.backing["sayslate-ai-provider-profiles"];
   assert.equal(stateAfterFirst.profiles.length, 1);
+  // F2: with no profile previously active, migration activates the migrated profile
+  // in the same write (LD-033).
+  assert.equal(stateAfterFirst.activeProfileId, firstMigration.id);
 
   const legacyAfterFirst = storage.backing["sayslate-grammar-config"];
   assert.equal(legacyAfterFirst.apiKey, undefined, "migration must move, not copy, the legacy key");
@@ -212,11 +224,12 @@ function createModule(chrome) {
   // the legacy record already lost its key/model in the same write as the original migration.
   await module1.deleteProfile(firstMigration.id);
   assert.equal(storage.backing["sayslate-ai-provider-profiles"].profiles.length, 0);
+  assert.equal(storage.backing["sayslate-ai-provider-profiles"].activeProfileId, null);
   const migrationAfterDelete = await module1.migrateLegacyConfig();
   assert.equal(migrationAfterDelete, null, "a deleted migrated profile must never be recreated");
   assert.equal(storage.backing["sayslate-ai-provider-profiles"].profiles.length, 0);
 
-  console.log("Legacy Gemini migration, idempotency, and post-delete non-recreation verified.");
+  console.log("Legacy Gemini migration, preset endpoint, activation, idempotency, and post-delete non-recreation verified.");
 }
 
 // ---- Scenario 5: clearing the migrated profile's credential, then migrating again, recreates nothing ----
@@ -248,6 +261,153 @@ function createModule(chrome) {
   assert.equal(storage.backing["sayslate-grammar-config"].apiKey, undefined);
 
   console.log("Post-clear-credential migration non-recreation verified.");
+}
+
+// ---- Scenario 6 (F2): migration leaves an existing active selection alone ----
+
+{
+  const legacyConfig = {
+    apiKey: "test-key-legacy-gemini-3",
+    model: "gemini-3.1-flash-lite",
+    firstPassPrompt: "Correct grammar only.",
+    secondPassPrompt: "Improve clarity.",
+    secondPassEnabled: true,
+    promptSchemaVersion: 3
+  };
+  const storage = createStorage({ "sayslate-grammar-config": legacyConfig });
+  const module1 = createModule(storage.chrome);
+  await module1.load();
+
+  const openAiProfile = await module1.upsertProfile({
+    name: "Work OpenAI",
+    providerKind: "openai",
+    endpoint: "https://api.openai.com/v1",
+    modelId: "gpt-test",
+    credential: "test-key-openai",
+    credentialAction: "replace"
+  });
+  await module1.activateProfile(openAiProfile.id);
+
+  const migrated = await module1.migrateLegacyConfig();
+  assert.ok(migrated);
+
+  const stateAfterMigration = storage.backing["sayslate-ai-provider-profiles"];
+  assert.equal(
+    stateAfterMigration.activeProfileId,
+    openAiProfile.id,
+    "migration must not disturb an already-active profile"
+  );
+  assert.equal(stateAfterMigration.profiles.length, 2);
+
+  console.log("Migration leaving an existing active selection untouched verified.");
+}
+
+// ---- Scenario 7 (F3): credentialAction is never inferred - missing/unknown/blank-replace all reject without a write ----
+
+{
+  const storage = createStorage();
+  const module1 = createModule(storage.chrome);
+  await module1.load();
+  const profile = await module1.upsertProfile({
+    name: "Custom",
+    providerKind: "custom",
+    endpoint: "https://tailnet.example/v1",
+    modelId: "model-a",
+    credential: "test-key-custom",
+    credentialAction: "replace"
+  });
+  const writesBefore = storage.setCalls.length;
+
+  await assert.rejects(
+    module1.upsertProfile({ id: profile.id, modelId: "model-b" }),
+    "a missing credentialAction must reject rather than silently erase the credential"
+  );
+  await assert.rejects(
+    module1.upsertProfile({ id: profile.id, modelId: "model-b", credentialAction: "bogus" }),
+    "an unknown credentialAction must reject"
+  );
+  await assert.rejects(
+    module1.upsertProfile({ id: profile.id, credentialAction: "replace", credential: "" }),
+    "replace with an empty credential must reject"
+  );
+  await assert.rejects(
+    module1.upsertProfile({ id: profile.id, credentialAction: "replace", credential: "   " }),
+    "replace with a whitespace-only credential must reject"
+  );
+  await assert.rejects(
+    module1.upsertProfile({ providerKind: "custom", credential: "test-key" }),
+    "a new profile with no credentialAction must reject"
+  );
+
+  assert.equal(storage.setCalls.length, writesBefore, "every rejected call must not call chrome.storage.local.set");
+  const unchanged = storage.backing["sayslate-ai-provider-profiles"].profiles.find((p) => p.id === profile.id);
+  assert.equal(unchanged.credential, "test-key-custom", "the stored credential must survive every rejected call");
+  assert.equal(unchanged.modelId, "model-a", "the stored model must survive every rejected call");
+
+  console.log("Explicit credentialAction requirement (F3) verified.");
+}
+
+// ---- Scenario 8 (F4): two concurrently open module instances never erase each other's writes ----
+
+{
+  const storage = createStorage();
+  const tabA = createModule(storage.chrome);
+  const tabB = createModule(storage.chrome);
+  await tabA.load();
+  await tabB.load();
+
+  const geminiProfile = await tabA.upsertProfile({
+    name: "Gemini",
+    providerKind: "gemini",
+    modelId: "gemini-3.1-flash-lite",
+    credential: "test-key-a",
+    credentialAction: "replace"
+  });
+  await tabA.activateProfile(geminiProfile.id);
+
+  // tabB has not reloaded since before geminiProfile existed. Its activateProfile call
+  // must read fresh storage immediately before writing, not the stale state from its
+  // own load() - otherwise it would overwrite tabA's profile with the pre-existing
+  // (empty) profile list, exactly as the orchestrator's probe reproduced.
+  const openAiProfile = await tabB.upsertProfile({
+    name: "OpenAI",
+    providerKind: "openai",
+    modelId: "gpt-test",
+    credential: "test-key-b",
+    credentialAction: "replace"
+  });
+
+  await tabB.activateProfile(openAiProfile.id);
+
+  const afterTabB = storage.backing["sayslate-ai-provider-profiles"];
+  assert.equal(afterTabB.profiles.length, 2, "tabB's writes must not erase tabA's concurrently added profile");
+  assert.equal(afterTabB.activeProfileId, openAiProfile.id);
+
+  // Now the reverse direction: tabA (still holding its own original in-process
+  // reference, never reloaded) mutates again and must not erase what tabB just wrote.
+  await tabA.activateProfile(geminiProfile.id);
+  const afterTabA = storage.backing["sayslate-ai-provider-profiles"];
+  assert.equal(afterTabA.profiles.length, 2, "tabA's writes must not erase tabB's concurrently added profile");
+  assert.equal(afterTabA.activeProfileId, geminiProfile.id);
+  const openAiStillPresent = afterTabA.profiles.find((profile) => profile.id === openAiProfile.id);
+  assert.ok(openAiStillPresent, "tabA must not have dropped tabB's profile");
+  assert.equal(openAiStillPresent.credential, "test-key-b");
+
+  console.log("Interleaved multi-instance mutation isolation (F4) verified.");
+}
+
+// ---- Scenario 9 (F5): chrome.storage.local absence rejects every operation, with no fallback store ----
+
+{
+  const context = { crypto: { randomUUID } };
+  context.globalThis = context;
+  vm.createContext(context);
+  vm.runInContext(source, context);
+  const moduleWithoutChromeStorage = context.SaySlateAIProviderSettings;
+
+  await assert.rejects(moduleWithoutChromeStorage.load(), "load() must reject when chrome.storage.local is absent");
+
+  console.log("No-storage-fallback rejection (F5) verified.");
 }
 
 console.log("AI provider profile storage and migration boundary verified.");
