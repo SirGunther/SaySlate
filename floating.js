@@ -2,9 +2,9 @@
   "use strict";
 
   const PROCESSING_CONFIG_KEY = "sayslate-grammar-config";
+  // LD-038(1): sayslate-grammar-config carries only prompt fields from here on - no
+  // renderer reads, defaults, or writes apiKey/model into it any longer.
   const DEFAULT_CONFIG = Object.freeze({
-    apiKey: "",
-    model: "gemini-3.1-flash-lite",
     firstPassPrompt: "",
     secondPassPrompt: "",
     secondPassEnabled: true
@@ -44,18 +44,29 @@
 
   function normalizeConfig(value = {}) {
     return {
-      apiKey: String(value.apiKey || "").trim(),
-      model: String(value.model || DEFAULT_CONFIG.model).trim(),
       firstPassPrompt: String(value.firstPassPrompt ?? value.grammarPrompt ?? "").trim(),
       secondPassPrompt: String(value.secondPassPrompt ?? value.refinement ?? "").trim(),
       secondPassEnabled: value.secondPassEnabled !== false
     };
   }
 
+  // LD-038(1): startup migration runs before either surface reads prompts. Floating.html
+  // reads the same legacy record (EV-004), so it must migrate too, not only the full page.
   async function loadConfig() {
+    await globalThis.SaySlateAIProviderSettings.load();
+    await globalThis.SaySlateAIProviderSettings.migrateLegacyConfig();
     const stored = await chrome.storage.local.get(PROCESSING_CONFIG_KEY);
     config = normalizeConfig(stored?.[PROCESSING_CONFIG_KEY]);
     renderControls();
+  }
+
+  // LD-038(2): resolves the active profile from storage at the start of every AI pass on
+  // this surface. The floating surface reads the active profile but never manages profiles
+  // (LD-027) - there is no Save/Test/Delete control here.
+  async function resolveActiveProfile() {
+    const state = await globalThis.SaySlateAIProviderSettings.load();
+    if (!state.activeProfileId) return null;
+    return state.profiles.find((profile) => profile.id === state.activeProfileId) || null;
   }
 
   function setStatus(state, label) {
@@ -198,11 +209,21 @@
     else startDictation();
   }
 
+  function friendlyProcessingError(error, passLabel) {
+    const messages = {
+      invalid_configuration: "The active provider profile is incomplete. Check connection settings on the full SaySlate page.",
+      authentication_failed: "The provider rejected the configured credential. Check connection settings on the full SaySlate page.",
+      model_unavailable: "That model was not found for this provider. Check connection settings on the full SaySlate page.",
+      structured_output_unsupported: "The provider does not support structured output for this request.",
+      malformed_response: "The provider returned a response that did not match the expected shape.",
+      request_timeout: `${passLabel} timed out. Please try again.`,
+      network_error: "SaySlate could not reach the provider. Check your connection.",
+      provider_error: "The provider request failed."
+    };
+    return messages[error?.code] || error?.message || `${passLabel} failed. Your text is unchanged.`;
+  }
+
   function validatePass(prompt, label) {
-    if (!config.apiKey) {
-      showNotice("Add your Google AI API key on the full SaySlate page first.", "error");
-      return false;
-    }
     if (!prompt) {
       showNotice(`Add a ${label.toLowerCase()} prompt on the full SaySlate page first.`, "error");
       return false;
@@ -212,16 +233,25 @@
 
   async function runFirstPass() {
     const source = transcript.value.trim();
-    if (!source || !validatePass(config.firstPassPrompt, "First-pass")) return false;
+    if (!source || processing || !validatePass(config.firstPassPrompt, "First-pass")) return false;
+    // F3: the running state is claimed synchronously, before any await, so a second
+    // trigger in the same tick is blocked by the `processing` guard above instead of
+    // racing past it while this call is still awaiting resolveActiveProfile(). Released on
+    // every early return (no profile, error) via finally.
     processing = true;
     setStatus("processing", "Phase 1");
     showNotice("Running first pass…");
     renderControls();
     try {
-      const result = await globalThis.SaySlateAIClient.generate({
-        apiKey: config.apiKey,
-        model: config.model,
-        prompt: `${config.firstPassPrompt}\n\n<transcript>\n${source}\n</transcript>`
+      // LD-038(2): the active profile is resolved from storage at the start of this pass.
+      const profile = await resolveActiveProfile();
+      if (!profile) {
+        showNotice("Choose a provider in connection settings on the full SaySlate page first.", "error");
+        return false;
+      }
+      const result = await globalThis.SaySlateAIProviderClient.generate({
+        profile,
+        userPrompt: `${config.firstPassPrompt}\n\n<transcript>\n${source}\n</transcript>`
       });
       transcript.value = result;
       baseText = result;
@@ -231,7 +261,7 @@
       return true;
     } catch (error) {
       setStatus("error", "Phase 1 failed");
-      showNotice(error?.message || "The first pass failed. Your text is unchanged.", "error");
+      showNotice(friendlyProcessingError(error, "First pass"), "error");
       return false;
     } finally {
       processing = false;
@@ -245,16 +275,22 @@
       showNotice("The second pass is disabled on the full SaySlate page.");
       return false;
     }
-    if (!source || !validatePass(config.secondPassPrompt, "Second-pass")) return false;
+    if (!source || processing || !validatePass(config.secondPassPrompt, "Second-pass")) return false;
+    // F3: claimed synchronously, before any await - see runFirstPass.
     processing = true;
     setStatus("processing", "Phase 2");
     showNotice("Running second pass…");
     renderControls();
     try {
-      const result = await globalThis.SaySlateAIClient.generate({
-        apiKey: config.apiKey,
-        model: config.model,
-        prompt: `${config.secondPassPrompt}\n\n<first_pass_result>\n${source}\n</first_pass_result>`
+      // LD-038(2): the active profile is resolved from storage at the start of this pass.
+      const profile = await resolveActiveProfile();
+      if (!profile) {
+        showNotice("Choose a provider in connection settings on the full SaySlate page first.", "error");
+        return false;
+      }
+      const result = await globalThis.SaySlateAIProviderClient.generate({
+        profile,
+        userPrompt: `${config.secondPassPrompt}\n\n<first_pass_result>\n${source}\n</first_pass_result>`
       });
       transcript.value = result;
       baseText = result;
@@ -264,7 +300,7 @@
       return true;
     } catch (error) {
       setStatus("error", "Phase 2 failed");
-      showNotice(error?.message || "The second pass failed. The previous text is preserved.", "error");
+      showNotice(friendlyProcessingError(error, "Second pass"), "error");
       return false;
     } finally {
       processing = false;

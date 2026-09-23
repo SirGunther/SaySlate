@@ -68,6 +68,9 @@ const themeScript = read("theme.js");
 const aiClient = read("aiClient.js");
 const aiProviderRegistry = read("aiProviderRegistry.js");
 const aiProviderPermissions = read("aiProviderPermissions.js");
+const aiProviderSettings = read("aiProviderSettings.js");
+const aiProviderClient = read("aiProviderClient.js");
+const aiProviderConnectionTest = read("aiProviderConnectionTest.js");
 const whisperServiceClient = read("whisperServiceClient.js");
 const dictationSettings = read("dictationSettings.js");
 const dictationProviderPanel = read("dictationProviderPanel.js");
@@ -98,6 +101,11 @@ const requiredFiles = [
   "aiClient.js",
   "aiProviderRegistry.js",
   "aiProviderPermissions.js",
+  "aiProviderSettings.js",
+  "openAICompatibleClient.js",
+  "anthropicClient.js",
+  "aiProviderClient.js",
+  "aiProviderConnectionTest.js",
   "theme.js",
   "whisperServiceClient.js",
   "micCapture.js",
@@ -109,6 +117,12 @@ const requiredFiles = [
   "tests/ai-client.test.mjs",
   "tests/ai-provider-registry.test.mjs",
   "tests/ai-provider-permissions.test.mjs",
+  "tests/ai-provider-settings.test.mjs",
+  "tests/ai-provider-client.test.mjs",
+  "tests/ai-provider-connection-test.test.mjs",
+  "tests/openai-compatible-client.test.mjs",
+  "tests/anthropic-client.test.mjs",
+  "tests/ai-provider-ui.test.mjs",
   "tests/speech-engine.test.mjs",
   "tests/background-routing.test.mjs",
   "tests/shortcut-protocol.test.mjs",
@@ -353,7 +367,17 @@ if (!script.includes('firstPassPrompt: ""') || !script.includes('secondPassPromp
 }
 if (!aiClient.includes("generateContent")) throw new Error("Google AI client is missing.");
 if (/AIza[0-9A-Za-z_-]{20,}/.test(aiClient + script)) throw new Error("A Google API key appears hardcoded.");
-if (!script.includes('model: "gemini-3.1-flash-lite"')) throw new Error("Gemini 3.1 Flash-Lite is not the default model.");
+// LD-038(6): Gemini 3.1 Flash-Lite is now the new-profile starting model in the provider
+// panel, not a processingConfig default - the assertion moves with the behavior.
+if (!script.includes('GEMINI_DEFAULT_MODEL = "gemini-3.1-flash-lite"')) {
+  throw new Error("Gemini 3.1 Flash-Lite is not the new-profile default model.");
+}
+if (script.includes('apiKey: ""') && script.includes("DEFAULT_PROCESSING_CONFIG")) {
+  const defaultConfigBlock = script.match(/DEFAULT_PROCESSING_CONFIG = Object\.freeze\(\{([\s\S]*?)\}\);/)?.[1] || "";
+  if (defaultConfigBlock.includes("apiKey") || defaultConfigBlock.includes("model:")) {
+    throw new Error("sayslate-grammar-config must no longer default apiKey or model (LD-038).");
+  }
+}
 if (!html.includes('id="secondPassPromptInput"')) throw new Error("Second-pass prompt field is missing.");
 if (!script.includes("processingConfig.secondPassPrompt")) throw new Error("Second-pass prompt is not used.");
 if (!html.includes('id="secondPassEnabledInput"') || !html.includes('role="switch"')) {
@@ -581,6 +605,72 @@ if (hasForEndpointFunction.includes("requestOrigin(") || hasForEndpointFunction.
   throw new Error("hasForEndpoint must never request a permission - it is a read-only check.");
 }
 
+// ---- SAYAI-05: provider settings UI and renderer integration checks ----
+
+// EV-025/LD-028: producers load before consumers in both HTML surfaces.
+const appProviderLoadOrder = ["aiClient.js", "aiProviderRegistry.js", "aiProviderPermissions.js", "aiProviderSettings.js", "openAICompatibleClient.js", "anthropicClient.js", "aiProviderClient.js", "aiProviderConnectionTest.js", "app.js"];
+let previousAppScriptIndex = -1;
+for (const file of appProviderLoadOrder) {
+  const index = html.indexOf(`src="${file}"`);
+  if (index === -1) throw new Error(`app.html is missing a script tag for ${file}.`);
+  if (index <= previousAppScriptIndex) throw new Error(`app.html must load ${file} after its provider-module dependencies.`);
+  previousAppScriptIndex = index;
+}
+const floatingProviderLoadOrder = ["aiClient.js", "aiProviderRegistry.js", "aiProviderPermissions.js", "aiProviderSettings.js", "openAICompatibleClient.js", "anthropicClient.js", "aiProviderClient.js", "aiProviderConnectionTest.js", "floating.js"];
+let previousFloatingScriptIndex = -1;
+for (const file of floatingProviderLoadOrder) {
+  const index = floatingHtml.indexOf(`src="${file}"`);
+  if (index === -1) throw new Error(`floating.html is missing a script tag for ${file}.`);
+  if (index <= previousFloatingScriptIndex) throw new Error(`floating.html must load ${file} after its provider-module dependencies.`);
+  previousFloatingScriptIndex = index;
+}
+
+// LD-038(1): neither renderer may read, default, or write apiKey/model into
+// sayslate-grammar-config any longer.
+if (script.includes("processingConfig.apiKey") || script.includes("processingConfig.model")) {
+  throw new Error("app.js must not read apiKey/model from processingConfig (LD-038).");
+}
+if (floatingScript.includes("config.apiKey") || floatingScript.includes("config.model")) {
+  throw new Error("floating.js must not read apiKey/model from its processing config (LD-038).");
+}
+
+// LD-038(2): both AI passes resolve the active profile from storage at pass start and call
+// the provider dispatcher, never the raw Gemini client, from the renderer boundary.
+if (!script.includes("resolveActiveProfile") || !script.includes("SaySlateAIProviderClient.generate")) {
+  throw new Error("app.js must resolve the active profile from storage and call SaySlateAIProviderClient.generate for each AI pass.");
+}
+if (!floatingScript.includes("resolveActiveProfile") || !floatingScript.includes("SaySlateAIProviderClient.generate")) {
+  throw new Error("floating.js must resolve the active profile from storage and call SaySlateAIProviderClient.generate for each AI pass.");
+}
+
+// LD-027: the full-page surface owns the complete profile-management control set; the
+// floating surface must not duplicate profile management.
+for (const controlId of ["profileSelect", "providerKindGemini", "providerKindOpenAI", "providerKindAnthropic", "providerKindCustom", "endpointInput", "testConnectionButton", "clearCredentialButton", "deleteProfileButton"]) {
+  if (!html.includes(`id="${controlId}"`)) throw new Error(`app.html is missing the LD-027 provider control: #${controlId}`);
+}
+if (floatingScript.includes("upsertProfile") || floatingScript.includes("deleteProfile") || floatingScript.includes("SaySlateAIProviderPermissions")) {
+  throw new Error("floating.js must not manage provider profiles (LD-027) - that is the full page's job.");
+}
+
+// LD-038(3)/(4)/(5): Save and Test each call ensureForEndpoint as their first awaited op.
+const saveApiSettingsFunction = script.match(/async function saveApiSettings\(event\) \{([\s\S]*?)\n  \}/)?.[1] || "";
+if (saveApiSettingsFunction.indexOf("ensureForEndpoint") === -1 || saveApiSettingsFunction.indexOf("ensureForEndpoint") > saveApiSettingsFunction.indexOf("upsertProfile")) {
+  throw new Error("saveApiSettings must call SaySlateAIProviderPermissions.ensureForEndpoint before upsertProfile.");
+}
+const testConnectionFunction = script.match(/async function testConnection\(\) \{([\s\S]*?)\n  \}/)?.[1] || "";
+if (testConnectionFunction.indexOf("ensureForEndpoint") === -1 || testConnectionFunction.indexOf("ensureForEndpoint") > testConnectionFunction.indexOf("ConnectionTest.test")) {
+  throw new Error("testConnection must call SaySlateAIProviderPermissions.ensureForEndpoint before SaySlateAIProviderConnectionTest.test.")
+}
+if (!testConnectionFunction.includes("existingProfile?.credential")) {
+  throw new Error("testConnection must fall back to the saved credential when the credential input is blank, and never write storage.");
+}
+
+// LD-038(6): the derived profile name and no separate name input.
+if (!script.includes("PROVIDER_LABELS[providerKind]") || html.includes('id="profileNameInput"')) {
+  throw new Error("Profile name must be derived from provider label and model ID, with no separate name control.");
+}
+
 console.log("Manifest, assets, and DOM references verified.");
 console.log("Local Whisper least-privilege permission, token isolation, and provider wiring verified.");
 console.log("AI provider registry and optional-origin permission boundary verified.");
+console.log("Provider settings UI and renderer integration (SAYAI-05) verified.");

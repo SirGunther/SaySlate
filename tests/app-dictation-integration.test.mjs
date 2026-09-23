@@ -8,6 +8,14 @@ const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 const read = (file) => fs.readFileSync(path.join(extensionRoot, file), "utf8");
 const settingsSource = read("dictationSettings.js");
 const appSource = read("app.js");
+// SAYAI-05: app.js now drives the real LD-023/LD-024/LD-025 provider modules (loaded here
+// exactly as app.html now orders them) instead of a fake SaySlateAIClient.generate call, so
+// this integration proves the real renderer-to-dispatcher-to-adapter-boundary wiring, not
+// just a mocked call shape.
+const aiProviderRegistrySource = read("aiProviderRegistry.js");
+const aiProviderPermissionsSource = read("aiProviderPermissions.js");
+const aiProviderSettingsSource = read("aiProviderSettings.js");
+const aiProviderClientSource = read("aiProviderClient.js");
 
 const ELEMENT_IDS = [
   "transcript", "startButton", "startButtonLabel", "finishWorkflowButton", "finishWorkflowLabel",
@@ -19,7 +27,11 @@ const ELEMENT_IDS = [
   "secondPassEnabledInput", "secondPassToggleState", "promptConfigurationStatus",
   "apiSettingsError", "promptSettingsError", "configurationStatus", "apiStatusDot",
   "firstPassButton", "firstPassLabel", "resultSection", "resultTranscript", "resultMeta",
-  "secondPassButton", "secondPassLabel", "copyResultButton", "discardResultButton"
+  "secondPassButton", "secondPassLabel", "copyResultButton", "discardResultButton",
+  // SAYAI-05: LD-027's provider-profile management controls.
+  "profileSelect", "providerKindGemini", "providerKindOpenAI", "providerKindAnthropic",
+  "providerKindCustom", "endpointInput", "connectionTestStatus", "connectionTestStatusText",
+  "testConnectionButton", "clearCredentialButton", "deleteProfileButton"
 ];
 
 function createElement(id) {
@@ -47,6 +59,7 @@ function createElement(id) {
     checked: false,
     type: "text",
     content: "",
+    innerHTML: "",
     scrollTop: 0,
     scrollHeight: 0,
     childIds: [],
@@ -113,6 +126,10 @@ function createFakeChrome() {
   return {
     __sentMessages: sentMessages,
     __setLocalWhisperSettings(value) { localStore["sayslate-dictation-settings"] = value; },
+    // SAYAI-05: seeds the LD-023 provider-profile record directly, the same shape
+    // aiProviderSettings.js itself persists, so a test can start with an active profile
+    // without driving the Save form first.
+    __setProviderProfiles(value) { localStore["sayslate-ai-provider-profiles"] = value; },
     __setSendMessageResponder(fn) { sendMessageResponder = fn; },
     __dispatchRuntimeMessage(message) {
       for (const fn of runtimeMessageListeners) fn(message, {}, () => {});
@@ -123,6 +140,13 @@ function createFakeChrome() {
         set(entries, callback) { localStore = { ...localStore, ...entries }; callback(); }
       }
     },
+    // LD-034: auto-grant so Save/Test in these dictation-focused scenarios are not blocked
+    // on a permission prompt this file does not exercise (that boundary is
+    // ai-provider-permissions.test.mjs's job).
+    permissions: {
+      contains(_query, callback) { callback(true); },
+      request(_query, callback) { callback(true); }
+    },
     runtime: {
       lastError: null,
       onMessage: { addListener(fn) { runtimeMessageListeners.push(fn); } },
@@ -132,6 +156,20 @@ function createFakeChrome() {
       }
     }
   };
+}
+
+function seedProviderProfile(chrome, {
+  id = "profile-1",
+  providerKind = "gemini",
+  endpoint = "https://generativelanguage.googleapis.com/v1beta",
+  modelId = "model",
+  credential = "key"
+} = {}) {
+  chrome.__setProviderProfiles({
+    version: 1,
+    activeProfileId: id,
+    profiles: [{ id, name: `${providerKind} · ${modelId}`, providerKind, endpoint, modelId, credential }]
+  });
 }
 
 function createFakeSpeech() {
@@ -165,11 +203,15 @@ function createFakeSpeech() {
   };
 }
 
+// SAYAI-05: aiProviderClient.js's gemini-native transport calls
+// globalThis.SaySlateAIClient.generateStructured({ ..., userPrompt, ... }) - this fake
+// stands in for that adapter boundary so these scenarios stay focused on app.js's own
+// wiring (profile resolution, pass ordering) rather than re-testing aiClient.js itself.
 function createFakeAiClient(responder) {
   const calls = [];
   return {
     calls,
-    generate(options) {
+    generateStructured(options) {
       calls.push(options);
       return Promise.resolve(responder ? responder(options) : "processed result");
     }
@@ -181,11 +223,12 @@ async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function buildContext({ provider = "browser", aiResponder, processingConfig } = {}) {
+function buildContext({ provider = "browser", aiResponder, processingConfig, providerProfile } = {}) {
   const { document, elements } = buildFakeDom();
   const chrome = createFakeChrome();
   const speech = createFakeSpeech();
   const aiClient = createFakeAiClient(aiResponder);
+  if (providerProfile) seedProviderProfile(chrome, providerProfile);
   const animations = {
     showToast() {},
     showPanel(panel) { panel.hidden = false; return Promise.resolve(); },
@@ -213,6 +256,7 @@ function buildContext({ provider = "browser", aiResponder, processingConfig } = 
     Error,
     Map,
     Promise,
+    URL,
     document,
     window: windowStub,
     localStorage,
@@ -222,6 +266,13 @@ function buildContext({ provider = "browser", aiResponder, processingConfig } = 
     SaySlateSpeech: speech,
     SaySlateAIClient: aiClient
   });
+
+  // SAYAI-05: real LD-023/LD-024/LD-025 provider modules, loaded in the same producer-
+  // before-consumer order app.html now uses, ahead of app.js itself.
+  vm.runInContext(aiProviderRegistrySource, context);
+  vm.runInContext(aiProviderPermissionsSource, context);
+  vm.runInContext(aiProviderSettingsSource, context);
+  vm.runInContext(aiProviderClientSource, context);
 
   vm.runInContext(settingsSource, context);
   if (provider === "local-whisper") {
@@ -461,8 +512,9 @@ function buildContext({ provider = "browser", aiResponder, processingConfig } = 
   const { elements, chrome, aiClient } = buildContext({
     provider: "local-whisper",
     processingConfig: {
-      apiKey: "key", model: "model", firstPassPrompt: "First pass prompt", secondPassPrompt: "", secondPassEnabled: false, promptSchemaVersion: 3
-    }
+      firstPassPrompt: "First pass prompt", secondPassPrompt: "", secondPassEnabled: false, promptSchemaVersion: 3
+    },
+    providerProfile: { modelId: "model", credential: "key" }
   });
   await flush();
 
@@ -498,10 +550,11 @@ function buildContext({ provider = "browser", aiResponder, processingConfig } = 
 
   assert.equal(aiClient.calls.length, 1, "the first AI pass must run only after stop settles");
   assert.equal(
-    aiClient.calls[0].prompt,
+    aiClient.calls[0].userPrompt,
     "First pass prompt\n\n<transcript>\ndictated content\n</transcript>",
     "the exact first-pass prompt construction must be unchanged for Local Whisper transcripts"
   );
+  assert.equal(aiClient.calls[0].modelId, "model");
 }
 
 // ---- Local Whisper: a stop settlement failure preserves the transcript and shows an explicit error ----
@@ -510,7 +563,7 @@ function buildContext({ provider = "browser", aiResponder, processingConfig } = 
   const { elements, chrome, aiClient } = buildContext({
     provider: "local-whisper",
     processingConfig: {
-      apiKey: "key", model: "model", firstPassPrompt: "First pass prompt", secondPassPrompt: "", secondPassEnabled: false, promptSchemaVersion: 3
+      firstPassPrompt: "First pass prompt", secondPassPrompt: "", secondPassEnabled: false, promptSchemaVersion: 3
     }
   });
   await flush();
@@ -549,7 +602,7 @@ function buildContext({ provider = "browser", aiResponder, processingConfig } = 
   const { elements, chrome, aiClient } = buildContext({
     provider: "local-whisper",
     processingConfig: {
-      apiKey: "key", model: "model", firstPassPrompt: "First pass prompt", secondPassPrompt: "", secondPassEnabled: false, promptSchemaVersion: 3
+      firstPassPrompt: "First pass prompt", secondPassPrompt: "", secondPassEnabled: false, promptSchemaVersion: 3
     }
   });
   await flush();
@@ -588,10 +641,11 @@ function buildContext({ provider = "browser", aiResponder, processingConfig } = 
   const { elements, chrome, aiClient } = buildContext({
     provider: "local-whisper",
     processingConfig: {
-      apiKey: "key", model: "model", firstPassPrompt: "First pass prompt", secondPassPrompt: "Second pass prompt",
+      firstPassPrompt: "First pass prompt", secondPassPrompt: "Second pass prompt",
       secondPassEnabled: true, promptSchemaVersion: 3
     },
-    aiResponder: (options) => (options.prompt.includes("<transcript>") ? "first pass output" : "second pass output")
+    providerProfile: { modelId: "model", credential: "key" },
+    aiResponder: (options) => (options.userPrompt.includes("<transcript>") ? "first pass output" : "second pass output")
   });
   await flush();
 
@@ -611,12 +665,12 @@ function buildContext({ provider = "browser", aiResponder, processingConfig } = 
 
   assert.equal(aiClient.calls.length, 2, "both passes must run, in order, when the second pass is enabled");
   assert.equal(
-    aiClient.calls[0].prompt,
+    aiClient.calls[0].userPrompt,
     "First pass prompt\n\n<transcript>\ndictated content\n</transcript>",
     "first-pass prompt construction is unchanged"
   );
   assert.equal(
-    aiClient.calls[1].prompt,
+    aiClient.calls[1].userPrompt,
     "Second pass prompt\n\n<first_pass_result>\nfirst pass output\n</first_pass_result>",
     "second-pass prompt construction is unchanged and reads the first pass's own output as source text"
   );

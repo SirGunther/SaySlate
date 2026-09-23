@@ -16,6 +16,13 @@ const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
 const dictationSettingsSource = fs.readFileSync(path.join(extensionRoot, "dictationSettings.js"), "utf8");
 const floatingSpeechClientSource = fs.readFileSync(path.join(extensionRoot, "floatingSpeechClient.js"), "utf8");
 const floatingSource = fs.readFileSync(path.join(extensionRoot, "floating.js"), "utf8");
+// SAYAI-05: floating.js now resolves the active profile via the real LD-023/LD-024/LD-025
+// provider modules (loaded here exactly as floating.html now orders them) and calls the
+// shared dispatcher instead of a fake SaySlateAIClient.generate call.
+const aiProviderRegistrySource = fs.readFileSync(path.join(extensionRoot, "aiProviderRegistry.js"), "utf8");
+const aiProviderPermissionsSource = fs.readFileSync(path.join(extensionRoot, "aiProviderPermissions.js"), "utf8");
+const aiProviderSettingsSource = fs.readFileSync(path.join(extensionRoot, "aiProviderSettings.js"), "utf8");
+const aiProviderClientSource = fs.readFileSync(path.join(extensionRoot, "aiProviderClient.js"), "utf8");
 
 function createElement(id) {
   const listeners = {};
@@ -158,6 +165,12 @@ function buildFakeChrome(initialLocalStore = {}) {
         }
       },
       onChanged: { addListener() {} }
+    },
+    // LD-034: auto-grant - permission-prompt behavior is ai-provider-permissions.test.mjs's
+    // boundary, not this file's.
+    permissions: {
+      contains(_query, callback) { callback(true); },
+      request(_query, callback) { callback(true); }
     }
   };
 
@@ -176,17 +189,35 @@ function buildFakeChrome(initialLocalStore = {}) {
   };
 }
 
+// SAYAI-05: seeds the LD-023 provider-profile record directly, the same shape
+// aiProviderSettings.js itself persists, so a scenario can start with an active profile
+// without driving the full-page Save form.
+function seedProviderProfile(fakeChrome, {
+  id = "profile-1",
+  providerKind = "gemini",
+  endpoint = "https://generativelanguage.googleapis.com/v1beta",
+  modelId = "model",
+  credential = "key"
+} = {}) {
+  fakeChrome.localStore["sayslate-ai-provider-profiles"] = {
+    version: 1,
+    activeProfileId: id,
+    profiles: [{ id, name: `${providerKind} · ${modelId}`, providerKind, endpoint, modelId, credential }]
+  };
+}
+
 async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 const DEFAULT_GRAMMAR_CONFIG = Object.freeze({
-  apiKey: "key", model: "gemini-3.1-flash-lite", firstPassPrompt: "Clean this up", secondPassPrompt: "", secondPassEnabled: false
+  firstPassPrompt: "Clean this up", secondPassPrompt: "", secondPassEnabled: false
 });
 
-function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_GRAMMAR_CONFIG } = {}) {
+function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_GRAMMAR_CONFIG, providerProfile = {} } = {}) {
   const { document, elements } = buildFakeDom();
   const fakeChrome = buildFakeChrome({ "sayslate-grammar-config": grammarConfig });
+  seedProviderProfile(fakeChrome, providerProfile);
   const aiCalls = [];
   const windowListeners = {};
 
@@ -195,13 +226,19 @@ function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_G
     document,
     location: { search: `?session=${session}&surface=other` },
     URLSearchParams,
+    URL,
     console,
     setTimeout,
     clearTimeout,
+    crypto: { randomUUID: () => `uuid-${Math.random().toString(16).slice(2)}` },
     navigator: { clipboard: { writeText: async () => {} } },
+    // SAYAI-05: floating.js's gemini-native pass calls
+    // globalThis.SaySlateAIClient.generateStructured({ ..., userPrompt, ... }) through the
+    // real aiProviderClient.js dispatcher loaded below - this fake stands in for the adapter
+    // boundary so these scenarios stay focused on floating.js's own wiring.
     SaySlateAIClient: {
-      async generate({ prompt }) {
-        aiCalls.push(prompt);
+      async generateStructured({ userPrompt }) {
+        aiCalls.push(userPrompt);
         return "PROCESSED TEXT";
       }
     },
@@ -216,6 +253,13 @@ function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_G
       (windowListeners[type] ||= []).push(listener);
     }
   });
+
+  // SAYAI-05: real LD-023/LD-024/LD-025 provider modules, loaded in the same producer-
+  // before-consumer order floating.html now uses, ahead of floating.js itself.
+  vm.runInContext(aiProviderRegistrySource, context);
+  vm.runInContext(aiProviderPermissionsSource, context);
+  vm.runInContext(aiProviderSettingsSource, context);
+  vm.runInContext(aiProviderClientSource, context);
 
   vm.runInContext(dictationSettingsSource, context);
   vm.runInContext(floatingSpeechClientSource, context);
@@ -503,6 +547,29 @@ function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_G
   });
   assert.equal(env.elements.transcript.value, "should not survive", "the document is unloading - nothing further should change the transcript");
   assert.equal(env.fakeChrome.sentMessages.length, messageCountBefore, "no further commands should be sent once destroy() has run");
+}
+
+// ---- F3 regression: a synchronous double trigger on the floating surface must issue exactly one generation request ----
+// runFirstPass used to await resolveActiveProfile() before claiming the `processing` guard,
+// so a second trigger arriving in that window passed the reentry guard and issued a second
+// real request.
+
+{
+  const env = buildEnvironment({ session: "int-session-f3" });
+  await flush();
+  await flush();
+
+  env.elements.transcript.value = "double trigger source text";
+  env.elements.transcript.dispatch("input");
+
+  const before = env.aiCalls.length;
+  // Two synchronous dispatches, deliberately with no await between them.
+  env.elements.firstPassButton.dispatch("click");
+  env.elements.firstPassButton.dispatch("click");
+  await flush();
+  await flush();
+  await flush();
+  assert.equal(env.aiCalls.length - before, 1, "F3: a synchronous double trigger on the floating surface must produce exactly one generation request");
 }
 
 console.log("Floating dictation integration (both providers, Finish ordering, failed-stop blocking, Escape/Clear cancellation, beforeunload teardown, and no-fallback errors) verified.");
