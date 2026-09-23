@@ -233,18 +233,22 @@
 
   async function runFirstPass() {
     const source = transcript.value.trim();
-    if (!source || !validatePass(config.firstPassPrompt, "First-pass")) return false;
-    // LD-038(2): the active profile is resolved from storage at the start of this pass.
-    const profile = await resolveActiveProfile();
-    if (!profile) {
-      showNotice("Choose a provider in connection settings on the full SaySlate page first.", "error");
-      return false;
-    }
+    if (!source || processing || !validatePass(config.firstPassPrompt, "First-pass")) return false;
+    // F3: the running state is claimed synchronously, before any await, so a second
+    // trigger in the same tick is blocked by the `processing` guard above instead of
+    // racing past it while this call is still awaiting resolveActiveProfile(). Released on
+    // every early return (no profile, error) via finally.
     processing = true;
     setStatus("processing", "Phase 1");
     showNotice("Running first pass…");
     renderControls();
     try {
+      // LD-038(2): the active profile is resolved from storage at the start of this pass.
+      const profile = await resolveActiveProfile();
+      if (!profile) {
+        showNotice("Choose a provider in connection settings on the full SaySlate page first.", "error");
+        return false;
+      }
       const result = await globalThis.SaySlateAIProviderClient.generate({
         profile,
         userPrompt: `${config.firstPassPrompt}\n\n<transcript>\n${source}\n</transcript>`
@@ -271,18 +275,19 @@
       showNotice("The second pass is disabled on the full SaySlate page.");
       return false;
     }
-    if (!source || !validatePass(config.secondPassPrompt, "Second-pass")) return false;
-    // LD-038(2): the active profile is resolved from storage at the start of this pass.
-    const profile = await resolveActiveProfile();
-    if (!profile) {
-      showNotice("Choose a provider in connection settings on the full SaySlate page first.", "error");
-      return false;
-    }
+    if (!source || processing || !validatePass(config.secondPassPrompt, "Second-pass")) return false;
+    // F3: claimed synchronously, before any await - see runFirstPass.
     processing = true;
     setStatus("processing", "Phase 2");
     showNotice("Running second pass…");
     renderControls();
     try {
+      // LD-038(2): the active profile is resolved from storage at the start of this pass.
+      const profile = await resolveActiveProfile();
+      if (!profile) {
+        showNotice("Choose a provider in connection settings on the full SaySlate page first.", "error");
+        return false;
+      }
       const result = await globalThis.SaySlateAIProviderClient.generate({
         profile,
         userPrompt: `${config.secondPassPrompt}\n\n<first_pass_result>\n${source}\n</first_pass_result>`

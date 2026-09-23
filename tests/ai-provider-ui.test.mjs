@@ -468,6 +468,38 @@ let customProfileId;
   const gemini = stored.profiles.find((profile) => profile.id === geminiProfileId);
   assert.equal(custom.credential, "", "Clear Credential blanks the selected profile's credential");
   assert.equal(gemini.credential, GEMINI_KEY, "Clear Credential must never touch another profile's credential");
+
+  // F1 regression: clearCredential resolves to the updated PROFILE, not the
+  // { version, activeProfileId, profiles } state - a stale providerState previously made
+  // every controller call after Clear Credential throw "Cannot read properties of
+  // undefined (reading 'find')". Prove no error, a correct placeholder, and that select,
+  // Save, and Test all keep working afterward.
+  assert.equal(elements.apiSettingsError.hidden, true, "F1: Clear Credential itself must not surface an error");
+  assert.equal(elements.apiKeyInput.placeholder, "Paste your key", "F1: the placeholder must show no saved key after Clear Credential");
+
+  elements.profileSelect.value = geminiProfileId;
+  elements.profileSelect.dispatch("change");
+  await flush();
+  assert.equal(elements.apiSettingsError.hidden, true, "F1: selecting another profile after Clear Credential must not error");
+  assert.equal(elements.endpointInput.value, "https://generativelanguage.googleapis.com/v1beta");
+
+  elements.profileSelect.value = customProfileId;
+  elements.profileSelect.dispatch("change");
+  await flush();
+  assert.equal(elements.apiSettingsError.hidden, true, "F1: reselecting the credential-cleared profile must not error");
+  assert.equal(elements.apiKeyInput.placeholder, "Paste your key");
+
+  elements.apiKeyInput.value = "new-custom-key";
+  elements.apiSettingsForm.dispatch("submit", { preventDefault() {} });
+  await flush();
+  assert.equal(elements.apiSettingsError.hidden, true, "F1: Save after Clear Credential must still succeed");
+  const customAfterSave = chrome.__localStore["sayslate-ai-provider-profiles"].profiles.find((profile) => profile.id === customProfileId);
+  assert.equal(customAfterSave.credential, "new-custom-key");
+
+  elements.testConnectionButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.equal(elements.connectionTestStatus.dataset.state, "available", "F1: Test Connection after Clear Credential must still succeed");
 }
 
 // ---- Delete removes only the selected profile; the survivor is completely unchanged ----
@@ -496,6 +528,70 @@ let customProfileId;
   // identical field values.
   assert.deepEqual(survivorAfter, survivorBefore, "the surviving Gemini profile is byte-for-byte unchanged by deleting the other one");
   assert.equal(elements.profileSelect.value, "", "deleting the active profile leaves no active selection (LD-023)");
+}
+
+// ---- F2 regression: migration must complete before loadProcessingConfig strips the key ----
+// Startup used to call loadProcessingConfig() before, and concurrently with, the migration
+// IIFE. When the stored promptSchemaVersion was already behind PROMPT_SCHEMA_VERSION,
+// loadProcessingConfig's own migration write raced ahead of migrateLegacyConfig's read and
+// stripped apiKey/model from the legacy record before it was ever copied into a profile -
+// silently losing the key. This proves an old-schema legacy record still yields exactly one
+// migrated Gemini profile, the prompt-schema upgrade still applies, and the legacy record
+// ends with no apiKey/model.
+
+{
+  const legacyStore = {
+    "sayslate-grammar-config": {
+      apiKey: "legacy-key",
+      model: "legacy-model",
+      firstPassPrompt: "Clean this up",
+      secondPassPrompt: "",
+      secondPassEnabled: true,
+      promptSchemaVersion: 0
+    }
+  };
+  const { chrome } = buildInstance({ localStore: legacyStore, fetchImpl });
+  await flush();
+  await flush();
+  await flush();
+
+  const providerStore = chrome.__localStore["sayslate-ai-provider-profiles"];
+  assert.equal(providerStore.profiles.length, 1, "F2: exactly one profile must be migrated from an old-schema legacy record");
+  assert.equal(providerStore.profiles[0].providerKind, "gemini");
+  assert.equal(providerStore.profiles[0].credential, "legacy-key", "F2: the legacy key must reach the migrated profile, not be stripped first");
+  assert.equal(providerStore.profiles[0].modelId, "legacy-model");
+
+  const legacyAfter = chrome.__localStore["sayslate-grammar-config"];
+  assert.equal(legacyAfter.apiKey, undefined, "F2: the legacy record must end with no apiKey");
+  assert.equal(legacyAfter.model, undefined, "F2: the legacy record must end with no model");
+  assert.equal(legacyAfter.promptSchemaVersion, 3, "F2: the prompt-schema upgrade must still apply after migration");
+}
+
+// ---- F3 regression: a synchronous double trigger must issue exactly one generation request ----
+// runFirstPass/runSecondPass used to await resolveActiveProfile() before claiming the
+// firstPassRunning/secondPassRunning guard, so a second trigger arriving in that window
+// passed the reentry guard and issued a second real request.
+
+{
+  const { elements } = buildInstance({ localStore: sharedLocalStore, fetchImpl });
+  await flush();
+  elements.apiSettingsToggle.dispatch("click");
+  elements.profileSelect.value = geminiProfileId;
+  elements.profileSelect.dispatch("change");
+  await flush();
+
+  elements.transcript.value = "double trigger source text";
+  elements.transcript.dispatch("input");
+
+  const before = fetchImpl.__calls.filter((call) => call.url.includes(":generateContent")).length;
+  // Two synchronous dispatches, deliberately with no await between them, simulating a
+  // double click landing before the first call's own guard has taken effect.
+  elements.firstPassButton.dispatch("click");
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  await flush();
+  const after = fetchImpl.__calls.filter((call) => call.url.includes(":generateContent")).length;
+  assert.equal(after - before, 1, "F3: a synchronous double trigger on the full page must produce exactly one generation request");
 }
 
 console.log("Provider settings UI (LD-027) production-controller integration verified.");

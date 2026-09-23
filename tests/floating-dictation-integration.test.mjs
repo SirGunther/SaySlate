@@ -549,4 +549,27 @@ function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_G
   assert.equal(env.fakeChrome.sentMessages.length, messageCountBefore, "no further commands should be sent once destroy() has run");
 }
 
+// ---- F3 regression: a synchronous double trigger on the floating surface must issue exactly one generation request ----
+// runFirstPass used to await resolveActiveProfile() before claiming the `processing` guard,
+// so a second trigger arriving in that window passed the reentry guard and issued a second
+// real request.
+
+{
+  const env = buildEnvironment({ session: "int-session-f3" });
+  await flush();
+  await flush();
+
+  env.elements.transcript.value = "double trigger source text";
+  env.elements.transcript.dispatch("input");
+
+  const before = env.aiCalls.length;
+  // Two synchronous dispatches, deliberately with no await between them.
+  env.elements.firstPassButton.dispatch("click");
+  env.elements.firstPassButton.dispatch("click");
+  await flush();
+  await flush();
+  await flush();
+  assert.equal(env.aiCalls.length - before, 1, "F3: a synchronous double trigger on the floating surface must produce exactly one generation request");
+}
+
 console.log("Floating dictation integration (both providers, Finish ordering, failed-stop blocking, Escape/Clear cancellation, beforeunload teardown, and no-fallback errors) verified.");

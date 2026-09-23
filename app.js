@@ -438,7 +438,11 @@
   async function clearCredentialHandler() {
     if (!selectedProfileId) return;
     try {
-      providerState = await globalThis.SaySlateAIProviderSettings.clearCredential(selectedProfileId);
+      // F1: clearCredential resolves to the updated PROFILE (per LD-023), not the
+      // { version, activeProfileId, profiles } state - reload the real state afterward
+      // instead of assigning the profile in its place.
+      await globalThis.SaySlateAIProviderSettings.clearCredential(selectedProfileId);
+      providerState = await globalThis.SaySlateAIProviderSettings.load();
       apiKeyInput.value = "";
       renderProfileForm();
       renderConfigurationStatus();
@@ -742,18 +746,22 @@
       return false;
     }
 
-    // LD-038(2): the active profile is resolved from storage at the start of this pass -
-    // never from a cached value.
-    const profile = await resolveActiveProfile();
-    if (!profile) {
-      showNotice("Choose a provider in connection settings before running an AI pass.");
-      openApiSettings(false);
-      return false;
-    }
-
-    hideNotice();
+    // F3: the running state is claimed synchronously, before any await, so a second
+    // trigger in the same tick is blocked by the guard above instead of racing past it
+    // while this call is still awaiting resolveActiveProfile(). Released on every early
+    // return (no profile, error) via finally.
     setFirstPassRunning(true);
     try {
+      // LD-038(2): the active profile is resolved from storage at the start of this pass -
+      // never from a cached value.
+      const profile = await resolveActiveProfile();
+      if (!profile) {
+        showNotice("Choose a provider in connection settings before running an AI pass.");
+        openApiSettings(false);
+        return false;
+      }
+
+      hideNotice();
       const processed = await globalThis.SaySlateAIProviderClient.generate({
         profile,
         userPrompt: buildFirstPassPrompt(sourceText)
@@ -793,18 +801,19 @@
       return false;
     }
 
-    // LD-038(2): the active profile is resolved from storage at the start of this pass -
-    // never from a cached value.
-    const profile = await resolveActiveProfile();
-    if (!profile) {
-      showNotice("Choose a provider in connection settings before running an AI pass.");
-      openApiSettings(false);
-      return false;
-    }
-
-    hideNotice();
+    // F3: claimed synchronously, before any await - see runFirstPass.
     setSecondPassRunning(true);
     try {
+      // LD-038(2): the active profile is resolved from storage at the start of this pass -
+      // never from a cached value.
+      const profile = await resolveActiveProfile();
+      if (!profile) {
+        showNotice("Choose a provider in connection settings before running an AI pass.");
+        openApiSettings(false);
+        return false;
+      }
+
+      hideNotice();
       const processed = await globalThis.SaySlateAIProviderClient.generate({
         profile,
         userPrompt: buildSecondPassPrompt(sourceText)
@@ -1438,9 +1447,13 @@
   applyTheme(document.documentElement.dataset.theme, false);
   updateTextControls();
   showResultTranscript();
-  void loadProcessingConfig();
-  // LD-038(1): startup migration runs before either surface reads prompts. Idempotent per
-  // LD-030 - a deleted/credential-cleared migrated profile is never recreated on reload.
+  // F2/LD-038(1): migration must fully complete - including its own read of the legacy
+  // record - before loadProcessingConfig ever reads sayslate-grammar-config. The two used
+  // to run concurrently: when the stored promptSchemaVersion was already behind,
+  // loadProcessingConfig's own migration write raced ahead of migrateLegacyConfig's read and
+  // stripped apiKey/model from the legacy record before it was ever copied into a profile,
+  // silently losing the key. Sequencing this in one async IIFE - migrate, then load prompts -
+  // makes the order explicit rather than relying on relative Promise timing.
   void (async () => {
     providerState = await globalThis.SaySlateAIProviderSettings.load();
     await globalThis.SaySlateAIProviderSettings.migrateLegacyConfig();
@@ -1448,6 +1461,7 @@
     selectedProfileId = providerState.activeProfileId || "";
     renderProfileSelect();
     renderConfigurationStatus();
+    await loadProcessingConfig();
   })();
   if (dictationSettingsApi) {
     // load() always notifies "settings" - including on this very first call - so subscribing
