@@ -94,33 +94,71 @@
             <div class="settings-header">
               <div>
                 <p>CONNECTION</p>
-                <h2 id="apiSettingsTitle">API &amp; model</h2>
+                <h2 id="apiSettingsTitle">AI provider</h2>
               </div>
               <button id="closeApiSettingsButton" class="panel-close" type="button" aria-label="Close API settings">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17" /></svg>
               </button>
             </div>
 
+            <label class="field-label" for="profileSelect">Saved profile</label>
+            <select id="profileSelect" class="settings-input text-surface">
+              <option value="">New profile…</option>
+            </select>
+
+            <fieldset class="provider-choice">
+              <legend class="sr-only">Provider</legend>
+              <label class="provider-option">
+                <input type="radio" name="providerKind" id="providerKindGemini" value="gemini" checked />
+                <span>Gemini</span>
+              </label>
+              <label class="provider-option">
+                <input type="radio" name="providerKind" id="providerKindOpenAI" value="openai" />
+                <span>OpenAI</span>
+              </label>
+              <label class="provider-option">
+                <input type="radio" name="providerKind" id="providerKindAnthropic" value="anthropic" />
+                <span>Claude</span>
+              </label>
+              <label class="provider-option">
+                <input type="radio" name="providerKind" id="providerKindCustom" value="custom" />
+                <span>Custom</span>
+              </label>
+            </fieldset>
+
             <form id="apiSettingsForm">
-              <label class="field-label" for="apiKeyInput">Google AI API key</label>
+              <label class="field-label" for="endpointInput">Endpoint</label>
+              <input id="endpointInput" class="settings-input text-surface" type="text" autocomplete="off" spellcheck="false" placeholder="https://…" />
+              <p class="field-help">Editable starting point per provider. Saved with this profile.</p>
+
+              <label class="field-label" for="apiKeyInput">API key</label>
               <div class="secret-field">
-                <input id="apiKeyInput" class="text-surface" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your existing key" />
+                <input id="apiKeyInput" class="text-surface" type="password" autocomplete="off" spellcheck="false" placeholder="Blank keeps the saved key" />
                 <button id="revealKeyButton" type="button" aria-label="Show API key" data-visible="false">
                   <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.2-5 9-5 9 5 9 5-3.2 5-9 5-9-5Z" /><circle cx="12" cy="12" r="2.2" /></svg>
                   <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 16M10.6 7.2A9.8 9.8 0 0 1 12 7c5.8 0 9 5 9 5a14 14 0 0 1-2.1 2.6M6.2 6.2C4.1 7.7 3 9.5 3 12c0 0 3.2 5 9 5 1.2 0 2.3-.2 3.2-.6" /></svg>
                 </button>
               </div>
-              <p class="field-help">Stored only in SaySlate's private browser storage.</p>
+              <p class="field-help">Stored only in SaySlate's private browser storage. Leave blank to keep the saved key.</p>
 
               <label class="field-label" for="modelInput">Model ID</label>
               <input id="modelInput" class="settings-input text-surface" type="text" autocomplete="off" spellcheck="false" value="gemini-3.1-flash-lite" />
-              <p class="field-help">Gemini 3.1 Flash-Lite · Optimized for speed.</p>
+              <p class="field-help">Exact model ID for the selected provider.</p>
 
               <div id="apiSettingsError" class="settings-error" role="alert" hidden></div>
+              <div id="connectionTestStatus" class="dictation-availability" data-state="idle" hidden>
+                <span class="dictation-availability-dot" aria-hidden="true"></span>
+                <span id="connectionTestStatusText">Not tested</span>
+              </div>
 
               <div class="settings-footer">
                 <span id="configurationStatus" class="configuration-status">Not configured</span>
-                <button id="saveSettingsButton" class="button settings-save" type="submit">Save API</button>
+                <button id="saveSettingsButton" class="button settings-save" type="submit">Save &amp; activate</button>
+              </div>
+              <div class="settings-footer">
+                <button id="testConnectionButton" class="button button-quiet" type="button">Test connection</button>
+                <button id="clearCredentialButton" class="button button-quiet" type="button">Clear credential</button>
+                <button id="deleteProfileButton" class="button button-quiet" type="button">Delete</button>
               </div>
             </form>
           </aside>
@@ -355,7 +393,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M7 10V8a5 5 0 0 1 10 0v2M6 10h12v10H6z" />
           </svg>
-          Dictation stays local. Running an AI pass sends the applicable text to your configured Google model.
+          Dictation stays local. Running an AI pass sends the applicable text to your configured AI provider.
         </p>
       </main>
     </div>
@@ -368,6 +406,13 @@
     </div>
 
     <script src="aiClient.js"></script>
+    <script src="aiProviderRegistry.js"></script>
+    <script src="aiProviderPermissions.js"></script>
+    <script src="aiProviderSettings.js"></script>
+    <script src="openAICompatibleClient.js"></script>
+    <script src="anthropicClient.js"></script>
+    <script src="aiProviderClient.js"></script>
+    <script src="aiProviderConnectionTest.js"></script>
     <script src="speechEngine.js"></script>
     <script src="animations.js"></script>
     <script src="dictationSettings.js"></script>

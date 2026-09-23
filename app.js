@@ -8,14 +8,18 @@
   const RESULT_SOURCE_KEY = "sayslate-corrected-source";
   const RESULT_STAGE_KEY = "sayslate-corrected-stage";
   const PROMPT_SCHEMA_VERSION = 3;
+  // LD-038(1): sayslate-grammar-config carries only prompt fields from here on - no
+  // renderer reads, defaults, or writes apiKey/model into it any longer.
   const DEFAULT_PROCESSING_CONFIG = Object.freeze({
-    apiKey: "",
-    model: "gemini-3.1-flash-lite",
     firstPassPrompt: "",
     secondPassPrompt: "",
     secondPassEnabled: true,
     promptSchemaVersion: PROMPT_SCHEMA_VERSION
   });
+  // LD-038(6): the one literal default this ticket keeps - a new Gemini profile's starting
+  // model, not a processingConfig default.
+  const GEMINI_DEFAULT_MODEL = "gemini-3.1-flash-lite";
+  const PROVIDER_LABELS = Object.freeze({ gemini: "Gemini", openai: "OpenAI", anthropic: "Claude", custom: "Custom" });
   const transcript = document.querySelector("#transcript");
   const startButton = document.querySelector("#startButton");
   const startButtonLabel = document.querySelector("#startButtonLabel");
@@ -42,9 +46,20 @@
   const closePromptSettingsButton = document.querySelector("#closePromptSettingsButton");
   const promptSettingsForm = document.querySelector("#promptSettingsForm");
   const promptStatusDot = document.querySelector("#promptStatusDot");
+  const profileSelect = document.querySelector("#profileSelect");
+  const providerKindGemini = document.querySelector("#providerKindGemini");
+  const providerKindOpenAI = document.querySelector("#providerKindOpenAI");
+  const providerKindAnthropic = document.querySelector("#providerKindAnthropic");
+  const providerKindCustom = document.querySelector("#providerKindCustom");
+  const endpointInput = document.querySelector("#endpointInput");
   const apiKeyInput = document.querySelector("#apiKeyInput");
   const revealKeyButton = document.querySelector("#revealKeyButton");
   const modelInput = document.querySelector("#modelInput");
+  const connectionTestStatus = document.querySelector("#connectionTestStatus");
+  const connectionTestStatusText = document.querySelector("#connectionTestStatusText");
+  const testConnectionButton = document.querySelector("#testConnectionButton");
+  const clearCredentialButton = document.querySelector("#clearCredentialButton");
+  const deleteProfileButton = document.querySelector("#deleteProfileButton");
   const firstPassPromptInput = document.querySelector("#firstPassPromptInput");
   const secondPassPromptInput = document.querySelector("#secondPassPromptInput");
   const secondPassEnabledInput = document.querySelector("#secondPassEnabledInput");
@@ -76,6 +91,12 @@
   let copyResetTimer = null;
   let copyWhenStopped = false;
   let processingConfig = { ...DEFAULT_PROCESSING_CONFIG };
+  // LD-023/LD-038: the in-memory mirror of SaySlateAIProviderSettings.load()'s last result.
+  // Refreshed on every mutation (activate/upsert/delete/clearCredential) and again from
+  // storage at the start of every AI pass (LD-038(2)) - never used as a cached source for a
+  // request itself.
+  let providerState = { version: 1, activeProfileId: null, profiles: [] };
+  let selectedProfileId = "";
   let firstPassRunning = false;
   let secondPassRunning = false;
   let finishWorkflowRunning = false;
@@ -180,8 +201,6 @@
 
   function normalizeProcessingConfig(value = {}) {
     return {
-      apiKey: String(value.apiKey || "").trim(),
-      model: String(value.model || DEFAULT_PROCESSING_CONFIG.model).trim(),
       firstPassPrompt: String(value.firstPassPrompt ?? value.grammarPrompt ?? "").trim(),
       secondPassPrompt: String(value.secondPassPrompt ?? value.refinement ?? "").trim(),
       secondPassEnabled: value.secondPassEnabled !== false,
@@ -222,8 +241,253 @@
       text.includes("without adding unsupported information");
   }
 
+  // LD-038(2): whether an active, still-present provider profile exists right now. Never
+  // cached beyond providerState, which is itself refreshed from storage on every mutation
+  // and again immediately before each AI pass.
+  function hasActiveProfile() {
+    return Boolean(
+      providerState.activeProfileId &&
+      providerState.profiles.some((profile) => profile.id === providerState.activeProfileId)
+    );
+  }
+
+  function findProfileById(id) {
+    return providerState.profiles.find((profile) => profile.id === id) || null;
+  }
+
+  function getSelectedProviderKind() {
+    if (providerKindOpenAI.checked) return "openai";
+    if (providerKindAnthropic.checked) return "anthropic";
+    if (providerKindCustom.checked) return "custom";
+    return "gemini";
+  }
+
+  function setSelectedProviderKind(kind) {
+    providerKindGemini.checked = kind === "gemini";
+    providerKindOpenAI.checked = kind === "openai";
+    providerKindAnthropic.checked = kind === "anthropic";
+    providerKindCustom.checked = kind === "custom";
+  }
+
+  // LD-017/LD-024: preset endpoints are only editable starting values for a new profile -
+  // never applied over an existing saved profile's endpoint.
+  function applyProviderPreset(kind) {
+    const preset = globalThis.SaySlateAIProviderRegistry.presetFor(kind);
+    endpointInput.value = preset ? preset.defaultEndpoint : "";
+    modelInput.value = kind === "gemini" ? GEMINI_DEFAULT_MODEL : "";
+  }
+
+  function handleProviderKindChange() {
+    // Only a new/unsaved profile's preset follows the radio choice; switching an existing
+    // saved profile's providerKind must not silently overwrite its saved endpoint/model.
+    if (!selectedProfileId) applyProviderPreset(getSelectedProviderKind());
+  }
+
+  function renderProfileSelect() {
+    const options = ['<option value="">New profile…</option>'];
+    for (const profile of providerState.profiles) {
+      const label = (profile.name || profile.providerKind).replace(/[&<>"]/g, (char) => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[char]
+      ));
+      options.push(`<option value="${profile.id}">${label}</option>`);
+    }
+    profileSelect.innerHTML = options.join("");
+    profileSelect.value = providerState.profiles.some((profile) => profile.id === selectedProfileId)
+      ? selectedProfileId
+      : "";
+  }
+
+  function renderProfileForm() {
+    const profile = findProfileById(selectedProfileId);
+    if (profile) {
+      setSelectedProviderKind(profile.providerKind);
+      endpointInput.value = profile.endpoint;
+      modelInput.value = profile.modelId;
+    } else {
+      applyProviderPreset(getSelectedProviderKind());
+    }
+    apiKeyInput.value = "";
+    apiKeyInput.placeholder = profile && profile.credential ? "Blank keeps the saved key" : "Paste your key";
+    connectionTestStatus.hidden = true;
+  }
+
+  function permissionResultMessage(code) {
+    if (code === "invalid_configuration") return "That endpoint is not a valid HTTPS URL.";
+    return "Permission for that endpoint was not granted.";
+  }
+
+  async function handleProfileSelectChange() {
+    selectedProfileId = profileSelect.value;
+    apiSettingsError.hidden = true;
+    if (selectedProfileId) {
+      try {
+        // LD-038(3): selecting a saved profile activates it immediately.
+        providerState = await globalThis.SaySlateAIProviderSettings.activateProfile(selectedProfileId);
+      } catch (error) {
+        apiSettingsError.textContent = error?.message || "Could not activate the selected profile.";
+        apiSettingsError.hidden = false;
+      }
+    }
+    renderProfileForm();
+    renderConfigurationStatus();
+  }
+
+  async function saveApiSettings(event) {
+    event.preventDefault();
+    apiSettingsError.hidden = true;
+
+    const providerKind = getSelectedProviderKind();
+    const rawEndpoint = endpointInput.value.trim();
+    const modelId = modelInput.value.trim();
+    const credentialInput = apiKeyInput.value;
+
+    if (!rawEndpoint) {
+      apiSettingsError.textContent = "Enter an endpoint for this provider.";
+      apiSettingsError.hidden = false;
+      return;
+    }
+    if (!modelId) {
+      apiSettingsError.textContent = "Enter a model ID for this provider.";
+      apiSettingsError.hidden = false;
+      return;
+    }
+
+    // LD-038(4): the permission check is the first awaited operation in this handler.
+    const permissionResult = await globalThis.SaySlateAIProviderPermissions.ensureForEndpoint(rawEndpoint);
+    if (!permissionResult.ok) {
+      apiSettingsError.textContent = permissionResultMessage(permissionResult.code);
+      apiSettingsError.hidden = false;
+      return;
+    }
+
+    // LD-038(5): Save stores normalizeEndpoint's output; an invalid endpoint blocks Save.
+    const normalized = globalThis.SaySlateAIProviderRegistry.normalizeEndpoint(rawEndpoint);
+    if (!normalized.ok) {
+      apiSettingsError.textContent = "That endpoint is not a valid HTTPS URL.";
+      apiSettingsError.hidden = false;
+      return;
+    }
+
+    // LD-038(6): the derived name - no separate name control.
+    const name = `${PROVIDER_LABELS[providerKind] || "Custom"} · ${modelId}`;
+    const credentialAction = credentialInput.trim()
+      ? globalThis.SaySlateAIProviderSettings.CREDENTIAL_ACTIONS.REPLACE
+      : globalThis.SaySlateAIProviderSettings.CREDENTIAL_ACTIONS.RETAIN;
+
+    try {
+      const savedProfile = await globalThis.SaySlateAIProviderSettings.upsertProfile({
+        id: selectedProfileId || undefined,
+        name,
+        providerKind,
+        endpoint: normalized.endpoint,
+        modelId,
+        credential: credentialInput,
+        credentialAction
+      });
+      // LD-038(3): Save upserts, then activates.
+      providerState = await globalThis.SaySlateAIProviderSettings.activateProfile(savedProfile.id);
+      selectedProfileId = savedProfile.id;
+      renderProfileSelect();
+      renderProfileForm();
+      renderConfigurationStatus();
+      closeApiSettings();
+      showToast("Provider profile saved and activated");
+    } catch (error) {
+      apiSettingsError.textContent = error?.message || "The browser could not save this profile.";
+      apiSettingsError.hidden = false;
+    }
+  }
+
+  function showConnectionTestResult(code, message) {
+    connectionTestStatus.hidden = false;
+    connectionTestStatus.dataset.state = code === "available" ? "available" : "unavailable";
+    connectionTestStatusText.textContent = message;
+  }
+
+  async function testConnection() {
+    apiSettingsError.hidden = true;
+    const providerKind = getSelectedProviderKind();
+    const rawEndpoint = endpointInput.value.trim();
+    const modelId = modelInput.value.trim();
+    const existingProfile = findProfileById(selectedProfileId);
+    // LD-038(5): the saved credential is used only when the credential input is blank; Test
+    // never writes storage.
+    const credential = apiKeyInput.value.trim() || existingProfile?.credential || "";
+
+    // LD-038(4): the permission check is the first awaited operation in this handler too.
+    const permissionResult = await globalThis.SaySlateAIProviderPermissions.ensureForEndpoint(rawEndpoint);
+    if (!permissionResult.ok) {
+      showConnectionTestResult(permissionResult.code, permissionResultMessage(permissionResult.code));
+      return;
+    }
+
+    testConnectionButton.disabled = true;
+    testConnectionButton.textContent = "Testing…";
+    try {
+      const result = await globalThis.SaySlateAIProviderConnectionTest.test({
+        profile: { providerKind, endpoint: rawEndpoint, modelId, credential }
+      });
+      showConnectionTestResult(result.code, result.message);
+      showToast(result.ok ? "Connection test succeeded" : "Connection test failed");
+    } finally {
+      testConnectionButton.disabled = false;
+      testConnectionButton.textContent = "Test connection";
+    }
+  }
+
+  async function clearCredentialHandler() {
+    if (!selectedProfileId) return;
+    try {
+      providerState = await globalThis.SaySlateAIProviderSettings.clearCredential(selectedProfileId);
+      apiKeyInput.value = "";
+      renderProfileForm();
+      renderConfigurationStatus();
+      showToast("Credential cleared");
+    } catch (error) {
+      apiSettingsError.textContent = error?.message || "The credential could not be cleared.";
+      apiSettingsError.hidden = false;
+    }
+  }
+
+  async function deleteProfileHandler() {
+    if (!selectedProfileId) return;
+    try {
+      providerState = await globalThis.SaySlateAIProviderSettings.deleteProfile(selectedProfileId);
+      selectedProfileId = "";
+      renderProfileSelect();
+      renderProfileForm();
+      renderConfigurationStatus();
+      showToast("Provider profile deleted");
+    } catch (error) {
+      apiSettingsError.textContent = error?.message || "The profile could not be deleted.";
+      apiSettingsError.hidden = false;
+    }
+  }
+
+  // LD-038(2): resolves the active profile from storage at the start of every AI pass. No
+  // cached profile is ever used for a request.
+  async function resolveActiveProfile() {
+    providerState = await globalThis.SaySlateAIProviderSettings.load();
+    if (!providerState.activeProfileId) return null;
+    return findProfileById(providerState.activeProfileId);
+  }
+
+  function friendlyProcessingError(error, passLabel) {
+    const messages = {
+      invalid_configuration: "The selected provider profile is incomplete. Check connection settings.",
+      authentication_failed: "The provider rejected the configured credential. Check connection settings.",
+      model_unavailable: "That model was not found for this provider. Check connection settings.",
+      structured_output_unsupported: "The provider does not support structured output for this request.",
+      malformed_response: "The provider returned a response that did not match the expected shape.",
+      request_timeout: `${passLabel} timed out. Please try again.`,
+      network_error: "SaySlate could not reach the provider. Check your connection.",
+      provider_error: "The provider request failed. The existing text was preserved."
+    };
+    return messages[error?.code] || error?.message || `${passLabel} failed. The existing text was preserved.`;
+  }
+
   function renderConfigurationStatus() {
-    const apiConfigured = Boolean(processingConfig.apiKey && processingConfig.model);
+    const apiConfigured = hasActiveProfile();
     const promptsConfigured = Boolean(
       processingConfig.firstPassPrompt &&
       (!processingConfig.secondPassEnabled || processingConfig.secondPassPrompt)
@@ -233,7 +497,7 @@
     configurationStatus.classList.toggle("configured", apiConfigured);
     apiStatusDot.classList.toggle("configured", apiConfigured);
     promptStatusDot.classList.toggle("configured", promptsConfigured);
-    apiSettingsToggle.dataset.tooltip = apiConfigured ? "API key and model configured" : "Set up API key and model";
+    apiSettingsToggle.dataset.tooltip = apiConfigured ? "Provider profile active" : "Choose an AI provider";
     promptToggle.dataset.tooltip = promptsConfigured
       ? (secondPassEnabled ? "Both passes configured" : "First pass configured · Second pass off")
       : "Set up AI processing prompts";
@@ -278,12 +542,12 @@
 
   function openApiSettings(focusKey = false) {
     closePromptSettings();
-    apiKeyInput.value = processingConfig.apiKey;
-    modelInput.value = processingConfig.model;
+    renderProfileSelect();
+    renderProfileForm();
     apiSettingsError.hidden = true;
     void globalThis.SaySlateAnimations.showPanel(apiSettings);
     apiSettingsToggle.setAttribute("aria-expanded", "true");
-    window.requestAnimationFrame(() => (focusKey ? apiKeyInput : modelInput).focus());
+    window.requestAnimationFrame(() => (focusKey ? apiKeyInput : profileSelect).focus());
   }
 
   function closeApiSettings() {
@@ -296,7 +560,7 @@
   }
 
   function toggleApiSettings() {
-    if (apiSettings.hidden) openApiSettings(!processingConfig.apiKey);
+    if (apiSettings.hidden) openApiSettings(!hasActiveProfile());
     else closeApiSettings();
   }
 
@@ -334,32 +598,6 @@
     revealKeyButton.dataset.visible = String(showKey);
     revealKeyButton.setAttribute("aria-label", showKey ? "Hide API key" : "Show API key");
     apiKeyInput.focus();
-  }
-
-  async function saveApiSettings(event) {
-    event.preventDefault();
-    const nextConfig = normalizeProcessingConfig({
-      ...processingConfig,
-      apiKey: apiKeyInput.value,
-      model: modelInput.value
-    });
-
-    if (!nextConfig.apiKey || !nextConfig.model) {
-      apiSettingsError.textContent = "Enter both the Google AI API key and model ID.";
-      apiSettingsError.hidden = false;
-      return;
-    }
-
-    try {
-      await storageSet(PROCESSING_CONFIG_KEY, nextConfig);
-      processingConfig = nextConfig;
-      renderConfigurationStatus();
-      closeApiSettings();
-      showToast("API key and model saved");
-    } catch {
-      apiSettingsError.textContent = "The browser could not save these settings.";
-      apiSettingsError.hidden = false;
-    }
   }
 
   async function savePromptSettings(event) {
@@ -473,15 +711,6 @@
     return `${processingConfig.secondPassPrompt}\n\n<first_pass_result>\n${sourceText}\n</first_pass_result>`;
   }
 
-  function friendlyProcessingError(error, passLabel) {
-    if (error?.statusCode === 400) return "The model rejected the request. Check the model ID in API settings.";
-    if (error?.statusCode === 401 || error?.statusCode === 403) return "The Google API key was not accepted. Check it in API settings.";
-    if (error?.statusCode === 404) return "That Google model was not found. Check the model ID in API settings.";
-    if (error?.statusCode === 429) return "The Google model is rate-limited right now. Wait a moment and try again.";
-    if (error?.statusCode === 504) return `${passLabel} timed out. Please try again.`;
-    return error?.message || `${passLabel} failed. The existing text was preserved.`;
-  }
-
   function setFirstPassRunning(running) {
     firstPassRunning = running;
     firstPassButton.classList.toggle("is-loading", running);
@@ -513,19 +742,21 @@
       return false;
     }
 
-    if (!processingConfig.apiKey || !processingConfig.model) {
-      showNotice("Add your Google AI API key and model before running an AI pass.");
-      openApiSettings(true);
+    // LD-038(2): the active profile is resolved from storage at the start of this pass -
+    // never from a cached value.
+    const profile = await resolveActiveProfile();
+    if (!profile) {
+      showNotice("Choose a provider in connection settings before running an AI pass.");
+      openApiSettings(false);
       return false;
     }
 
     hideNotice();
     setFirstPassRunning(true);
     try {
-      const processed = await globalThis.SaySlateAIClient.generate({
-        apiKey: processingConfig.apiKey,
-        model: processingConfig.model,
-        prompt: buildFirstPassPrompt(sourceText)
+      const processed = await globalThis.SaySlateAIProviderClient.generate({
+        profile,
+        userPrompt: buildFirstPassPrompt(sourceText)
       });
       resultTranscript.value = processed;
       resultSource = transcript.value;
@@ -562,19 +793,21 @@
       return false;
     }
 
-    if (!processingConfig.apiKey || !processingConfig.model) {
-      showNotice("Add your Google AI API key and model before running an AI pass.");
-      openApiSettings(true);
+    // LD-038(2): the active profile is resolved from storage at the start of this pass -
+    // never from a cached value.
+    const profile = await resolveActiveProfile();
+    if (!profile) {
+      showNotice("Choose a provider in connection settings before running an AI pass.");
+      openApiSettings(false);
       return false;
     }
 
     hideNotice();
     setSecondPassRunning(true);
     try {
-      const processed = await globalThis.SaySlateAIClient.generate({
-        apiKey: processingConfig.apiKey,
-        model: processingConfig.model,
-        prompt: buildSecondPassPrompt(sourceText)
+      const processed = await globalThis.SaySlateAIProviderClient.generate({
+        profile,
+        userPrompt: buildSecondPassPrompt(sourceText)
       });
       resultTranscript.value = processed;
       resultStage = "second";
@@ -1130,6 +1363,14 @@
   closePromptSettingsButton.addEventListener("click", closePromptSettings);
   revealKeyButton.addEventListener("click", toggleApiKeyVisibility);
   apiSettingsForm.addEventListener("submit", saveApiSettings);
+  profileSelect.addEventListener("change", () => void handleProfileSelectChange());
+  providerKindGemini.addEventListener("change", handleProviderKindChange);
+  providerKindOpenAI.addEventListener("change", handleProviderKindChange);
+  providerKindAnthropic.addEventListener("change", handleProviderKindChange);
+  providerKindCustom.addEventListener("change", handleProviderKindChange);
+  testConnectionButton.addEventListener("click", () => void testConnection());
+  clearCredentialButton.addEventListener("click", () => void clearCredentialHandler());
+  deleteProfileButton.addEventListener("click", () => void deleteProfileHandler());
   promptSettingsForm.addEventListener("submit", savePromptSettings);
   secondPassEnabledInput.addEventListener("change", () => void saveSecondPassToggle());
   firstPassButton.addEventListener("click", () => void runFirstPass());
@@ -1198,6 +1439,16 @@
   updateTextControls();
   showResultTranscript();
   void loadProcessingConfig();
+  // LD-038(1): startup migration runs before either surface reads prompts. Idempotent per
+  // LD-030 - a deleted/credential-cleared migrated profile is never recreated on reload.
+  void (async () => {
+    providerState = await globalThis.SaySlateAIProviderSettings.load();
+    await globalThis.SaySlateAIProviderSettings.migrateLegacyConfig();
+    providerState = await globalThis.SaySlateAIProviderSettings.load();
+    selectedProfileId = providerState.activeProfileId || "";
+    renderProfileSelect();
+    renderConfigurationStatus();
+  })();
   if (dictationSettingsApi) {
     // load() always notifies "settings" - including on this very first call - so subscribing
     // before calling it covers both the initial page-load probe and every later save (a saved
