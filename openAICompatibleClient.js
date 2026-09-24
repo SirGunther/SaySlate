@@ -5,6 +5,11 @@
   // LM Studio, and any other custom endpoint the registry maps to this transport kind
   // (LD-024). No provider-specific branching lives here - every profile using this
   // transport is handled identically.
+  // SAYREASON-01A: for a non-streamed request (`stream` false/omitted) this bounds the
+  // request's total time. For a streamed Custom (LM Studio) request (`stream: true`) the
+  // abort timer restarts when `fetch` resolves and on every body chunk read (LD-007), so
+  // this instead bounds the time with nothing received - a long but steadily-arriving
+  // response (reasoning or otherwise, EV-025/EV-029) is never aborted mid-stream.
   const DEFAULT_TIMEOUT_MS = 90_000;
   const SCHEMA_NAME = "sayslate_result";
 
@@ -68,6 +73,71 @@
     });
   }
 
+  // SAYREASON-01A: true when `response` answered as a server-sent-event stream rather
+  // than a single JSON body (LM Studio's shape for `stream: true`, EV-028).
+  function isEventStream(response) {
+    const contentType = typeof response.headers?.get === "function" ? response.headers.get("content-type") : null;
+    return typeof contentType === "string" && contentType.includes("text/event-stream");
+  }
+
+  // SAYREASON-01A: reads LM Studio's SSE body (`data: {...}` lines, `data: [DONE]` end)
+  // through the streams reader, restarting the silence timer on every chunk so a request
+  // only times out when nothing arrives for `timeoutMs` (LD-007). Concatenates
+  // `choices[0].delta.content` only - `delta.reasoning_content` and every other field are
+  // ignored - then validates the result exactly as the non-streamed JSON path does.
+  async function readEventStream(response, restartTimeout) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let contentText = "";
+    let finished = false;
+
+    while (!finished) {
+      let step;
+      try {
+        step = await reader.read();
+      } catch (error) {
+        if (error?.name === "AbortError") throw boundedError("request_timeout", "The AI request timed out.");
+        throw boundedError("network_error", "The AI request failed to reach the provider.");
+      }
+      restartTimeout();
+      if (step.done) break;
+
+      buffer += decoder.decode(step.value, { stream: true });
+      let newlineIndex;
+      while (!finished && (newlineIndex = buffer.indexOf("\n")) !== -1) {
+        let line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        if (!line.startsWith("data:")) continue;
+
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") {
+          finished = true;
+          break;
+        }
+
+        let parsed;
+        try {
+          parsed = JSON.parse(payload);
+        } catch {
+          throw boundedError("malformed_response", "The AI provider returned a non-JSON response.");
+        }
+
+        if (parsed?.error) throw boundedError("provider_error", "The AI provider returned an error while streaming the response.");
+        const delta = Array.isArray(parsed?.choices) ? parsed.choices[0]?.delta : null;
+        if (delta?.refusal) throw boundedError("provider_error", "The AI provider refused the request.");
+        if (typeof delta?.content === "string") contentText += delta.content;
+      }
+    }
+
+    const text = validateCanonicalText(contentText);
+    if (!text) {
+      throw boundedError("malformed_response", "The AI provider returned a result that did not match the expected schema.");
+    }
+    return text;
+  }
+
   async function generate({
     endpoint,
     credential,
@@ -78,10 +148,18 @@
     fetchImpl,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     signal,
-    reasoningEffort
+    reasoningEffort,
+    stream = false
   }) {
     const timeoutController = new AbortController();
-    const timeout = window.setTimeout(() => timeoutController.abort(), timeoutMs);
+    let timeout = window.setTimeout(() => timeoutController.abort(), timeoutMs);
+    // SAYREASON-01A: only a streamed request restarts the silence timer (fetch resolving,
+    // then each body chunk read); a non-streamed request keeps its single total-time timer,
+    // exactly as before.
+    const restartTimeout = () => {
+      window.clearTimeout(timeout);
+      timeout = window.setTimeout(() => timeoutController.abort(), timeoutMs);
+    };
     const abortFromCaller = () => timeoutController.abort();
     signal?.addEventListener("abort", abortFromCaller, { once: true });
 
@@ -99,6 +177,7 @@
       // LD-041: sent only when the dispatcher asks for it, and only on this request; the
       // schema-free retry below stays the plain request for servers that reject the field.
       if (reasoningEffort) schemaBody.reasoning_effort = reasoningEffort;
+      if (stream) schemaBody.stream = true;
 
       let response;
       try {
@@ -113,6 +192,8 @@
         if (error?.name === "AbortError") throw boundedError("request_timeout", "The AI request timed out.");
         throw boundedError("network_error", "The AI request failed to reach the provider.");
       }
+
+      if (stream) restartTimeout();
 
       if (!response.ok) {
         if (response.status === 400 || response.status === 422) {
@@ -149,6 +230,13 @@
         }
 
         throw boundedError(mapStatusToCode(response.status), `The AI provider request failed with status ${response.status}.`);
+      }
+
+      // SAYREASON-01A: a streamed request whose server actually answered SSE reads the
+      // stream; one that answered plain JSON anyway (server ignored `stream`) falls
+      // through to the existing JSON path below, unchanged.
+      if (stream && isEventStream(response)) {
+        return await readEventStream(response, restartTimeout);
       }
 
       const bodyJson = await parseJsonBody(response);

@@ -167,10 +167,37 @@ function createFakeFetch({ geminiModelId, geminiKey, customModelId } = {}) {
     }
 
     if (parsed.pathname.endsWith("/chat/completions")) {
-      // OpenAI-compatible generation (structured JSON per LD-022).
+      // OpenAI-compatible generation (structured JSON per LD-022). SAYREASON-01A: the real
+      // dispatcher now sends stream:true for every Custom (LM Studio) profile, so this
+      // fake answers the SSE shape LM Studio really uses (EV-028) for a streamed request,
+      // carrying the same canonical-text content as a chunked `data:` stream, and falls
+      // back to the prior plain-JSON shape (now with an explicit content-type) otherwise.
+      const requestBody = JSON.parse(options.body || "{}");
+      if (requestBody.stream === true) {
+        const dataLine = `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ text: "custom pass result" }) } }] })}\n`;
+        const doneLine = "data: [DONE]\n";
+        let sent = false;
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (name.toLowerCase() === "content-type" ? "text/event-stream" : null) },
+          body: {
+            getReader() {
+              return {
+                async read() {
+                  if (sent) return { done: true, value: undefined };
+                  sent = true;
+                  return { done: false, value: new TextEncoder().encode(dataLine + doneLine) };
+                }
+              };
+            }
+          }
+        };
+      }
       return {
         ok: true,
         status: 200,
+        headers: { get: (name) => (name.toLowerCase() === "content-type" ? "application/json" : null) },
         json: async () => ({
           choices: [{ message: { content: JSON.stringify({ text: "custom pass result" }) } }]
         })
@@ -251,6 +278,9 @@ function buildInstance({ localStore = {}, fetchImpl } = {}) {
     localStorage,
     navigator: { clipboard: { writeText: () => Promise.resolve() } },
     crypto: { randomUUID: () => `uuid-${sharedUuidCounter += 1}` },
+    // SAYREASON-01A: openAICompatibleClient.js decodes a Custom (LM Studio) stream body
+    // with TextDecoder; a browser provides this global, so the test context must too.
+    TextDecoder,
     fetch: fetchImpl || (async () => { throw new Error("fetch was not expected in this scenario"); }),
     SaySlateAnimations: animations,
     SaySlateSpeech: speech,
