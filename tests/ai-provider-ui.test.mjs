@@ -27,7 +27,9 @@ const ELEMENT_IDS = [
   "closeApiSettingsButton", "apiSettingsForm", "promptToggle", "promptSettings",
   "closePromptSettingsButton", "promptSettingsForm", "promptStatusDot", "apiKeyInput",
   "revealKeyButton", "modelInput", "firstPassPromptInput", "secondPassPromptInput",
-  "secondPassEnabledInput", "secondPassToggleState", "promptConfigurationStatus",
+  "secondPassEnabledInput", "secondPassToggleState",
+  "firstPassReasoningInput", "firstPassReasoningState",
+  "secondPassReasoningInput", "secondPassReasoningState", "promptConfigurationStatus",
   "apiSettingsError", "promptSettingsError", "configurationStatus", "apiStatusDot",
   "firstPassButton", "firstPassLabel", "resultSection", "resultTranscript", "resultMeta",
   "secondPassButton", "secondPassLabel", "copyResultButton", "discardResultButton",
@@ -448,6 +450,262 @@ let customProfileId;
   await flush();
   await flush();
   assert.equal(elements.resultTranscript.value, "gemini pass result", "the second pass re-runs the same Gemini profile end to end");
+}
+
+// ---- SAYREASON-02: per-pass reasoning switches send reasoning_effort on Custom requests ----
+// Uses its own store (not sharedLocalStore) so it never disturbs the profile-lifecycle
+// scenarios around it; the active profile is a Custom (LM Studio-shaped) profile the real
+// dispatcher/adapter route to the /chat/completions transport.
+
+const REASONING_PROFILE_ID = "reasoning-custom-profile";
+
+function seedReasoningStore() {
+  return {
+    "sayslate-ai-provider-profiles": {
+      version: 1,
+      activeProfileId: REASONING_PROFILE_ID,
+      profiles: [{
+        id: REASONING_PROFILE_ID,
+        name: "custom · local-model",
+        providerKind: "custom",
+        endpoint: CUSTOM_ENDPOINT,
+        modelId: CUSTOM_MODEL,
+        credential: ""
+      }]
+    }
+  };
+}
+
+function lastChatCompletionsBody() {
+  const call = [...fetchImpl.__calls].reverse().find((entry) => entry.url.endsWith("/chat/completions"));
+  return JSON.parse(call.options.body);
+}
+
+// ---- Defaults: both switches off sends "none" for both passes ----
+
+{
+  const reasoningStore = seedReasoningStore();
+  const { elements } = buildInstance({ localStore: reasoningStore, fetchImpl });
+  await flush();
+
+  elements.transcript.value = "reasoning defaults source text";
+  elements.transcript.dispatch("input");
+
+  elements.promptToggle.dispatch("click");
+  elements.firstPassPromptInput.value = "Clean this up";
+  elements.secondPassPromptInput.value = "Polish this";
+  elements.secondPassEnabledInput.checked = true;
+  assert.equal(elements.firstPassReasoningInput.checked, false, "the first-pass reasoning switch defaults to off");
+  assert.equal(elements.secondPassReasoningInput.checked, false, "the second-pass reasoning switch defaults to off");
+  elements.promptSettingsForm.dispatch("submit", { preventDefault() {} });
+  await flush();
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.equal(lastChatCompletionsBody().reasoning_effort, "none", "the first pass sends \"none\" when its reasoning switch is off");
+
+  elements.secondPassButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.equal(lastChatCompletionsBody().reasoning_effort, "none", "the second pass sends \"none\" when its reasoning switch is off");
+}
+
+// ---- First pass on, second pass off: "medium" then "none" ----
+
+{
+  const reasoningStore = seedReasoningStore();
+  const { elements } = buildInstance({ localStore: reasoningStore, fetchImpl });
+  await flush();
+
+  elements.transcript.value = "reasoning first-on source text";
+  elements.transcript.dispatch("input");
+
+  elements.promptToggle.dispatch("click");
+  elements.firstPassPromptInput.value = "Clean this up";
+  elements.secondPassPromptInput.value = "Polish this";
+  elements.secondPassEnabledInput.checked = true;
+  elements.firstPassReasoningInput.checked = true;
+  elements.secondPassReasoningInput.checked = false;
+  elements.promptSettingsForm.dispatch("submit", { preventDefault() {} });
+  await flush();
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.equal(lastChatCompletionsBody().reasoning_effort, "medium", "the first pass sends \"medium\" when its reasoning switch is on");
+
+  elements.secondPassButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.equal(lastChatCompletionsBody().reasoning_effort, "none", "the second pass sends \"none\" when its reasoning switch stays off");
+}
+
+// ---- First pass off, second pass on: "none" then "medium" ----
+
+{
+  const reasoningStore = seedReasoningStore();
+  const { elements } = buildInstance({ localStore: reasoningStore, fetchImpl });
+  await flush();
+
+  elements.transcript.value = "reasoning second-on source text";
+  elements.transcript.dispatch("input");
+
+  elements.promptToggle.dispatch("click");
+  elements.firstPassPromptInput.value = "Clean this up";
+  elements.secondPassPromptInput.value = "Polish this";
+  elements.secondPassEnabledInput.checked = true;
+  elements.firstPassReasoningInput.checked = false;
+  elements.secondPassReasoningInput.checked = true;
+  elements.promptSettingsForm.dispatch("submit", { preventDefault() {} });
+  await flush();
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.equal(lastChatCompletionsBody().reasoning_effort, "none", "the first pass sends \"none\" when its reasoning switch stays off");
+
+  elements.secondPassButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.equal(lastChatCompletionsBody().reasoning_effort, "medium", "the second pass sends \"medium\" when its reasoning switch is on");
+}
+
+// ---- Reload: a fresh instance over the same storage shows and sends the saved switch state ----
+
+{
+  const reasoningStore = seedReasoningStore();
+  {
+    const { elements } = buildInstance({ localStore: reasoningStore, fetchImpl });
+    await flush();
+    elements.promptToggle.dispatch("click");
+    elements.firstPassPromptInput.value = "Clean this up";
+    elements.secondPassPromptInput.value = "Polish this";
+    elements.secondPassEnabledInput.checked = true;
+    elements.firstPassReasoningInput.checked = true;
+    elements.promptSettingsForm.dispatch("submit", { preventDefault() {} });
+    await flush();
+  }
+
+  const { elements } = buildInstance({ localStore: reasoningStore, fetchImpl });
+  await flush();
+  elements.promptToggle.dispatch("click");
+  assert.equal(elements.firstPassReasoningInput.checked, true, "a reload shows the previously saved first-pass reasoning switch state");
+  assert.equal(elements.firstPassReasoningState.textContent, "Reasoning on");
+
+  elements.transcript.value = "reasoning reload source text";
+  elements.transcript.dispatch("input");
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.equal(lastChatCompletionsBody().reasoning_effort, "medium", "a reload sends the saved switch's value, not a fresh default");
+}
+
+// ---- Second pass off: turning it off keeps secondPassReasoning stored; turning it back on sends it ----
+
+{
+  const reasoningStore = seedReasoningStore();
+  const { elements } = buildInstance({ localStore: reasoningStore, fetchImpl });
+  await flush();
+
+  elements.promptToggle.dispatch("click");
+  elements.firstPassPromptInput.value = "Clean this up";
+  elements.secondPassPromptInput.value = "Polish this";
+  elements.secondPassEnabledInput.checked = true;
+  elements.secondPassReasoningInput.checked = true;
+  elements.promptSettingsForm.dispatch("submit", { preventDefault() {} });
+  await flush();
+
+  // Turn the second pass off, then back on, via its own toggle (not Save prompts).
+  elements.secondPassEnabledInput.checked = false;
+  elements.secondPassEnabledInput.dispatch("change");
+  await flush();
+  assert.equal(
+    reasoningStore["sayslate-grammar-config"].secondPassReasoning,
+    true,
+    "disabling the second pass must not clear its stored reasoning setting"
+  );
+
+  elements.secondPassEnabledInput.checked = true;
+  elements.secondPassEnabledInput.dispatch("change");
+  await flush();
+
+  elements.transcript.value = "reasoning second-pass-off source text";
+  elements.transcript.dispatch("input");
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  await flush();
+  elements.secondPassButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.equal(lastChatCompletionsBody().reasoning_effort, "medium", "turning the second pass off and back on keeps its reasoning switch's saved value");
+}
+
+// ---- Failed save: a switch that fails to save shows its previous value ----
+
+{
+  const reasoningStore = seedReasoningStore();
+  const { elements, chrome } = buildInstance({ localStore: reasoningStore, fetchImpl });
+  await flush();
+
+  elements.promptToggle.dispatch("click");
+  elements.firstPassPromptInput.value = "Clean this up";
+  elements.secondPassPromptInput.value = "Polish this";
+  elements.secondPassEnabledInput.checked = true;
+  elements.promptSettingsForm.dispatch("submit", { preventDefault() {} });
+  await flush();
+  assert.equal(elements.firstPassReasoningInput.checked, false);
+
+  const originalSet = chrome.storage.local.set;
+  chrome.storage.local.set = (entries, callback) => {
+    chrome.runtime.lastError = { message: "storage unavailable" };
+    callback();
+    chrome.runtime.lastError = null;
+  };
+
+  elements.firstPassReasoningInput.checked = true;
+  elements.firstPassReasoningInput.dispatch("change");
+  await flush();
+
+  assert.equal(elements.firstPassReasoningInput.checked, false, "a failed save restores the switch's previous checked state");
+  assert.equal(elements.firstPassReasoningState.textContent, "Reasoning off", "a failed save restores the switch's previous state word");
+  assert.equal(elements.promptSettingsError.hidden, false);
+  assert.equal(elements.promptSettingsError.textContent, "The browser could not save the reasoning setting.");
+
+  chrome.storage.local.set = originalSet;
+}
+
+// ---- Gemini: reasoning switches on send no reasoning_effort at all ----
+
+{
+  const { elements } = buildInstance({ localStore: sharedLocalStore, fetchImpl });
+  await flush();
+
+  elements.apiSettingsToggle.dispatch("click");
+  elements.profileSelect.value = geminiProfileId;
+  elements.profileSelect.dispatch("change");
+  await flush();
+
+  elements.promptToggle.dispatch("click");
+  elements.firstPassPromptInput.value = "Clean this up";
+  elements.secondPassPromptInput.value = "Polish this";
+  elements.secondPassEnabledInput.checked = true;
+  elements.firstPassReasoningInput.checked = true;
+  elements.secondPassReasoningInput.checked = true;
+  elements.promptSettingsForm.dispatch("submit", { preventDefault() {} });
+  await flush();
+
+  elements.transcript.value = "gemini reasoning source text";
+  elements.transcript.dispatch("input");
+
+  const before = fetchImpl.__calls.length;
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  await flush();
+  const generateContentCalls = fetchImpl.__calls.slice(before).filter((entry) => entry.url.includes(":generateContent"));
+  assert.equal(generateContentCalls.length, 1, "the Gemini first pass must reach the real generateContent transport");
+  const generateContentBody = JSON.parse(generateContentCalls[0].options.body);
+  assert.equal(JSON.stringify(generateContentBody).includes("reasoning_effort"), false, "a Gemini request must never carry reasoning_effort even with both switches on");
 }
 
 // ---- Clear Credential blanks only the selected profile's own credential ----

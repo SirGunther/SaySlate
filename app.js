@@ -14,6 +14,8 @@
     firstPassPrompt: "",
     secondPassPrompt: "",
     secondPassEnabled: true,
+    firstPassReasoning: false,
+    secondPassReasoning: false,
     promptSchemaVersion: PROMPT_SCHEMA_VERSION
   });
   // LD-038(6): the one literal default this ticket keeps - a new Gemini profile's starting
@@ -64,6 +66,10 @@
   const secondPassPromptInput = document.querySelector("#secondPassPromptInput");
   const secondPassEnabledInput = document.querySelector("#secondPassEnabledInput");
   const secondPassToggleState = document.querySelector("#secondPassToggleState");
+  const firstPassReasoningInput = document.querySelector("#firstPassReasoningInput");
+  const firstPassReasoningState = document.querySelector("#firstPassReasoningState");
+  const secondPassReasoningInput = document.querySelector("#secondPassReasoningInput");
+  const secondPassReasoningState = document.querySelector("#secondPassReasoningState");
   const promptConfigurationStatus = document.querySelector("#promptConfigurationStatus");
   const apiSettingsError = document.querySelector("#apiSettingsError");
   const promptSettingsError = document.querySelector("#promptSettingsError");
@@ -208,6 +214,8 @@
       firstPassPrompt: String(value.firstPassPrompt ?? value.grammarPrompt ?? "").trim(),
       secondPassPrompt: String(value.secondPassPrompt ?? value.refinement ?? "").trim(),
       secondPassEnabled: value.secondPassEnabled !== false,
+      firstPassReasoning: value.firstPassReasoning === true,
+      secondPassReasoning: value.secondPassReasoning === true,
       promptSchemaVersion: Number(value.promptSchemaVersion || 0)
     };
   }
@@ -579,6 +587,10 @@
     secondPassPromptInput.value = processingConfig.secondPassPrompt;
     secondPassEnabledInput.checked = processingConfig.secondPassEnabled;
     secondPassToggleState.textContent = processingConfig.secondPassEnabled ? "Enabled" : "Disabled";
+    firstPassReasoningInput.checked = processingConfig.firstPassReasoning;
+    firstPassReasoningState.textContent = processingConfig.firstPassReasoning ? "Reasoning on" : "Reasoning off";
+    secondPassReasoningInput.checked = processingConfig.secondPassReasoning;
+    secondPassReasoningState.textContent = processingConfig.secondPassReasoning ? "Reasoning on" : "Reasoning off";
     promptSettingsError.hidden = true;
     void globalThis.SaySlateAnimations.showPanel(promptSettings);
     promptToggle.setAttribute("aria-expanded", "true");
@@ -614,6 +626,8 @@
     const firstPassPrompt = firstPassPromptInput.value.trim();
     const secondPassPrompt = secondPassPromptInput.value.trim();
     const secondPassEnabled = secondPassEnabledInput.checked;
+    const firstPassReasoning = firstPassReasoningInput.checked;
+    const secondPassReasoning = secondPassReasoningInput.checked;
 
     if (!firstPassPrompt) {
       promptSettingsError.textContent = "Enter a first-pass prompt.";
@@ -631,7 +645,9 @@
       ...processingConfig,
       firstPassPrompt,
       secondPassPrompt,
-      secondPassEnabled
+      secondPassEnabled,
+      firstPassReasoning,
+      secondPassReasoning
     });
     try {
       await storageSet(PROCESSING_CONFIG_KEY, nextConfig);
@@ -664,6 +680,48 @@
       secondPassEnabledInput.checked = previousConfig.secondPassEnabled;
       secondPassToggleState.textContent = previousConfig.secondPassEnabled ? "Enabled" : "Disabled";
       promptSettingsError.textContent = "The browser could not save the second-pass setting.";
+      promptSettingsError.hidden = false;
+    }
+  }
+
+  // LD-004: each reasoning switch saves as soon as it changes, following
+  // saveSecondPassToggle's state-word/toast/restore-on-failure shape.
+  async function saveFirstPassReasoningToggle() {
+    const firstPassReasoning = firstPassReasoningInput.checked;
+    firstPassReasoningState.textContent = firstPassReasoning ? "Reasoning on" : "Reasoning off";
+    promptSettingsError.hidden = true;
+    const previousConfig = processingConfig;
+    const nextConfig = normalizeProcessingConfig({ ...processingConfig, firstPassReasoning });
+
+    try {
+      await storageSet(PROCESSING_CONFIG_KEY, nextConfig);
+      processingConfig = nextConfig;
+      showToast(`First-pass reasoning ${firstPassReasoning ? "on" : "off"}`);
+    } catch {
+      processingConfig = previousConfig;
+      firstPassReasoningInput.checked = previousConfig.firstPassReasoning;
+      firstPassReasoningState.textContent = previousConfig.firstPassReasoning ? "Reasoning on" : "Reasoning off";
+      promptSettingsError.textContent = "The browser could not save the reasoning setting.";
+      promptSettingsError.hidden = false;
+    }
+  }
+
+  async function saveSecondPassReasoningToggle() {
+    const secondPassReasoning = secondPassReasoningInput.checked;
+    secondPassReasoningState.textContent = secondPassReasoning ? "Reasoning on" : "Reasoning off";
+    promptSettingsError.hidden = true;
+    const previousConfig = processingConfig;
+    const nextConfig = normalizeProcessingConfig({ ...processingConfig, secondPassReasoning });
+
+    try {
+      await storageSet(PROCESSING_CONFIG_KEY, nextConfig);
+      processingConfig = nextConfig;
+      showToast(`Second-pass reasoning ${secondPassReasoning ? "on" : "off"}`);
+    } catch {
+      processingConfig = previousConfig;
+      secondPassReasoningInput.checked = previousConfig.secondPassReasoning;
+      secondPassReasoningState.textContent = previousConfig.secondPassReasoning ? "Reasoning on" : "Reasoning off";
+      promptSettingsError.textContent = "The browser could not save the reasoning setting.";
       promptSettingsError.hidden = false;
     }
   }
@@ -775,7 +833,8 @@
       setStatus("processing", "Phase 1");
       const processed = await globalThis.SaySlateAIProviderClient.generate({
         profile,
-        userPrompt: buildFirstPassPrompt(sourceText)
+        userPrompt: buildFirstPassPrompt(sourceText),
+        reasoning: processingConfig.firstPassReasoning
       });
       resultTranscript.value = processed;
       resultSource = transcript.value;
@@ -834,7 +893,8 @@
       setStatus("processing", "Phase 2");
       const processed = await globalThis.SaySlateAIProviderClient.generate({
         profile,
-        userPrompt: buildSecondPassPrompt(sourceText)
+        userPrompt: buildSecondPassPrompt(sourceText),
+        reasoning: processingConfig.secondPassReasoning
       });
       resultTranscript.value = processed;
       resultStage = "second";
@@ -1410,6 +1470,8 @@
   deleteProfileButton.addEventListener("click", () => void deleteProfileHandler());
   promptSettingsForm.addEventListener("submit", savePromptSettings);
   secondPassEnabledInput.addEventListener("change", () => void saveSecondPassToggle());
+  if (firstPassReasoningInput) firstPassReasoningInput.addEventListener("change", () => void saveFirstPassReasoningToggle());
+  if (secondPassReasoningInput) secondPassReasoningInput.addEventListener("change", () => void saveSecondPassReasoningToggle());
   firstPassButton.addEventListener("click", () => void runFirstPass());
   secondPassButton.addEventListener("click", () => void runSecondPass());
   copyResultButton.addEventListener("click", () => void copyResultTranscript());

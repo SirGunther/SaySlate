@@ -39,6 +39,8 @@ The main action bar uses clean icon-only controls. The idle microphone uses the 
 
 The second pass has its own persistent on/off toggle in the prompt panel. Turning it off preserves the saved second-pass prompt, disables the standalone second-pass action, and makes **Ctrl + Alt + F** finish with the first-pass result: stop, run pass one, copy, then clear.
 
+Each pass also has its own reasoning switch in the prompt panel, off by default; it applies only to Custom (LM Studio) connections.
+
 The first AI call uses only the first-pass prompt and the original transcript. Its output appears in the lower editable card while the original remains unchanged.
 
 When enabled, the second AI call uses only the second-pass prompt and the current lower-card text. Its output replaces the lower-card text; it never replaces the original transcript or creates another panel. Either pass can perform any task the user defines.

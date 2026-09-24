@@ -306,6 +306,12 @@ button {
   margin: 0;
 }
 
+.pass-toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .pass-toggle {
   color: var(--muted);
   font-size: 11px;
