@@ -911,6 +911,7 @@ const PROVIDER_PROFILE = Object.freeze({ modelId: "model", credential: "key" });
   await flush();
   assert.equal(elements.statusText.textContent, "Phase 1 ready");
 
+  assert.equal(elements.startButton.disabled, false, "start dictating must be enabled for this dispatched click");
   elements.startButton.dispatch("click");
   assert.equal(elements.statusText.textContent, "Listening");
 
@@ -985,7 +986,10 @@ const PROVIDER_PROFILE = Object.freeze({ modelId: "model", credential: "key" });
   assert.equal(elements.statusText.textContent, "Listening", "a pass settling during dictation must not override Listening");
 
   // Stopping dictation after the pass already settled returns to "Ready", not the pass's
-  // result - the label was already cleared when the pass settled.
+  // result - the label was already cleared when the pass settled. By this point the first
+  // pass has finished (firstPassRunning is false again), so the start/stop button itself is
+  // enabled for this dispatched click.
+  assert.equal(elements.startButton.disabled, false, "stop dictating must be enabled for this dispatched click");
   elements.startButton.dispatch("click");
   assert.equal(elements.statusPill.dataset.state, "idle");
   assert.equal(elements.statusText.textContent, "Ready");
@@ -1009,7 +1013,10 @@ const PROVIDER_PROFILE = Object.freeze({ modelId: "model", credential: "key" });
   document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "d", preventDefault() {}, target: null });
   assert.equal(elements.statusText.textContent, "Listening");
 
-  elements.startButton.dispatch("click");
+  // The start/stop button is disabled while the first pass runs (app.js:878), so a real
+  // user stops dictation here with the same Ctrl+Alt+D shortcut used to start it, not a
+  // click on the disabled button.
+  document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "d", preventDefault() {}, target: null });
   assert.equal(elements.statusPill.dataset.state, "processing", "stopping dictation while the pass is still in flight must show that pass, not Ready (LD-007)");
   assert.equal(elements.statusText.textContent, "Phase 1");
 

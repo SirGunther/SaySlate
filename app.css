@@ -1240,10 +1240,16 @@ html[data-theme="dark"] .status-pill[data-state="error"] {
   color: #fc6b83;
 }
 
-/* EV-008/LD-005: "processing" uses a fixed hue (matching Floating Slate) rather than a
-   theme variable, so it needs its own dark legibility pass, same as listening/error above.
-   "complete" needs no override here - its border/background/color are all var(--accent) /
-   var(--accent-pale), which already resolve to the dark palette from :root's dark block. */
+/* EV-008/LD-005: every state's pill background already comes from the dark
+   html[data-theme="dark"] .status-pill rule above (0,2,1), which outranks each
+   [data-state=...] rule's own background (0,2,0) - true for "processing" and "complete"
+   alike, exactly as it already is for listening/error. Only border-color and color are
+   left for a state rule to set here.
+   "processing" uses a fixed hue (matching Floating Slate) rather than a theme variable, so
+   its light-mode border/color need their own dark legibility pass: #9fbcdb is a lighter
+   tint of the light-mode #5b7fa3, for contrast against the dark surface.
+   "complete" needs no override here - its border-color and color are var(--accent), which
+   :root's dark block already redefines, same as listening/error's color values do. */
 html[data-theme="dark"] .status-pill[data-state="processing"] {
   border-color: rgba(91, 127, 163, 0.4);
   color: #9fbcdb;
