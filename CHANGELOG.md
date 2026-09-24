@@ -30,6 +30,7 @@ The **AI provider profiles** below (Gemini, OpenAI, Anthropic Claude, and a Cust
 - Custom profiles send `reasoning_effort: "none"`, so LM Studio answers without a reasoning pass whatever its saved Enable Thinking setting. On the LM Studio host, thinking had taken a pass from about 2 s to about 12 s.
 - The existing Gemini key and model migrate once into a Gemini profile; a deleted or cleared profile is never re-created by that migration.
 - Custom endpoints must be HTTPS. Access is requested for the exact configured origin only, and only when you click Save or Test Connection (`optional_host_permissions: https://*/*`); Gemini and Local Whisper keep their fixed grants.
+- The full-page status badge now shows each AI pass as it runs ("Phase 1", "Phase 2"), then its result, matching Floating Slate.
 
 ### Fixed
 
