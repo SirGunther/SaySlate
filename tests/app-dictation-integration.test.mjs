@@ -1069,6 +1069,9 @@ const PROVIDER_PROFILE = Object.freeze({ modelId: "model", credential: "key" });
   assert.equal(elements.statusText.textContent, "Phase 2");
   assert.equal(elements.toastMessage.textContent, "AI processing is already running");
 
+  // F1: clear the fake DOM's observation point so the assertion below can only pass if
+  // the Ctrl+Alt+R keydown itself set the toast, not the Ctrl+Alt+D keydown above it.
+  elements.toastMessage.textContent = "";
   document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "r", preventDefault() {}, target: null });
   assert.equal(clipboard.writeCalls, clipboardCallsBefore, "Ctrl+Alt+R must not copy while the second pass runs (LD-008)");
   assert.equal(elements.statusPill.dataset.state, "processing");
