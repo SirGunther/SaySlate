@@ -1470,8 +1470,8 @@
   deleteProfileButton.addEventListener("click", () => void deleteProfileHandler());
   promptSettingsForm.addEventListener("submit", savePromptSettings);
   secondPassEnabledInput.addEventListener("change", () => void saveSecondPassToggle());
-  if (firstPassReasoningInput) firstPassReasoningInput.addEventListener("change", () => void saveFirstPassReasoningToggle());
-  if (secondPassReasoningInput) secondPassReasoningInput.addEventListener("change", () => void saveSecondPassReasoningToggle());
+  firstPassReasoningInput.addEventListener("change", () => void saveFirstPassReasoningToggle());
+  secondPassReasoningInput.addEventListener("change", () => void saveSecondPassReasoningToggle());
   firstPassButton.addEventListener("click", () => void runFirstPass());
   secondPassButton.addEventListener("click", () => void runSecondPass());
   copyResultButton.addEventListener("click", () => void copyResultTranscript());
