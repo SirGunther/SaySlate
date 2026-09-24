@@ -52,7 +52,7 @@ The **AI provider profiles** below (Gemini, OpenAI, Anthropic Claude, and a Cust
 - Fixed a stale test assertion in the existing offscreen-speech suite that checked the wrong Stop ordering; the production code already correctly waits for the microphone/worklet to flush before sending the WhisperService stop control.
 - Kept browser automation disabled; live validation against a running WhisperService instance, a real microphone, and the installed extension remains pending.
 - Added focused tests for AI provider settings, the registry and permissions, each transport, Test Connection, the dispatcher, and the provider UI; `node tests/verify.mjs` passes.
-- Live, 2026-09-23: from the Chrome machine, a Custom profile reached LM Studio (`google/gemma-4-12b-qat`) through Tailscale Serve, and both Test Connection and a first pass succeeded. Against a local LM Studio, the real client sending `reasoning_effort: "none"` returned 0 reasoning tokens.
+- Live, 2026-09-23: from the Chrome machine, a Custom profile reached LM Studio (`google/gemma-4-12b-qat`) through Tailscale Serve, and both Test Connection and a first pass succeeded. Against a local LM Studio, the real client sending `reasoning_effort: "none"` returned 0 reasoning tokens, and on the LM Studio host, whose saved Enable Thinking setting is on, a SaySlate pass also returned 0 reasoning tokens.
 - Live, 2026-09-23: Gemini requests reached Google and the key was accepted, but `gemini-3.1-flash-lite` answered HTTP 503 (high demand), so a successful Gemini generation on this build has not been observed yet. OpenAI and Claude profiles have not been run live.
 
 ### Documentation
