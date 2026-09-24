@@ -110,6 +110,7 @@ function buildFakeChrome(initialLocalStore = {}) {
   const sentMessages = [];
   const insertCalls = [];
   const listeners = [];
+  const storageChangeListeners = [];
   let nextLocalWhisperStart = { ok: true };
   let nextLocalWhisperStop = { ok: true, reason: "session-closed" };
   let nextInsertResponse = { ok: true, mode: "inserted", message: "Inserted" };
@@ -164,7 +165,16 @@ function buildFakeChrome(initialLocalStore = {}) {
           return Promise.resolve();
         }
       },
-      onChanged: { addListener() {} }
+      // SAYREASON-02: a real listener registry (not a no-op) so a scenario can prove
+      // floating.js's live storage-change path, the same way dispatchToAllListeners already
+      // proves its runtime.onMessage path below.
+      onChanged: {
+        addListener(listener) { storageChangeListeners.push(listener); },
+        removeListener(listener) {
+          const index = storageChangeListeners.indexOf(listener);
+          if (index >= 0) storageChangeListeners.splice(index, 1);
+        }
+      }
     },
     // LD-034: auto-grant - permission-prompt behavior is ai-provider-permissions.test.mjs's
     // boundary, not this file's.
@@ -182,6 +192,9 @@ function buildFakeChrome(initialLocalStore = {}) {
     localStore,
     dispatchToAllListeners(message) {
       for (const listener of listeners) listener(message, {}, () => {});
+    },
+    fireStorageChange(changes, area = "local") {
+      for (const listener of storageChangeListeners) listener(changes, area);
     },
     setNextLocalWhisperStart(response) { nextLocalWhisperStart = response; },
     setNextLocalWhisperStop(response) { nextLocalWhisperStop = response; },
@@ -219,6 +232,7 @@ function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_G
   const fakeChrome = buildFakeChrome({ "sayslate-grammar-config": grammarConfig });
   seedProviderProfile(fakeChrome, providerProfile);
   const aiCalls = [];
+  const reasoningCalls = [];
   const windowListeners = {};
 
   const context = vm.createContext({
@@ -239,6 +253,17 @@ function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_G
     SaySlateAIClient: {
       async generateStructured({ userPrompt }) {
         aiCalls.push(userPrompt);
+        return "PROCESSED TEXT";
+      }
+    },
+    // SAYREASON-02: stands in for the OpenAI-compatible adapter boundary (the same boundary
+    // SaySlateAIClient fakes above for Gemini), so a Custom-profile scenario can drive the
+    // real aiProviderClient.js dispatcher and observe the reasoningEffort it computed from
+    // the saved per-pass switch, without a real /chat/completions transport.
+    SaySlateOpenAICompatibleClient: {
+      async generate({ userPrompt, reasoningEffort }) {
+        aiCalls.push(userPrompt);
+        reasoningCalls.push(reasoningEffort);
         return "PROCESSED TEXT";
       }
     },
@@ -265,7 +290,7 @@ function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_G
   vm.runInContext(floatingSpeechClientSource, context);
   vm.runInContext(floatingSource, context);
 
-  return { context, document, elements, fakeChrome, aiCalls, windowListeners, settingsApi: context.SaySlateDictationSettings };
+  return { context, document, elements, fakeChrome, aiCalls, reasoningCalls, windowListeners, settingsApi: context.SaySlateDictationSettings };
 }
 
 // ---- Browser Dictation regression: unchanged end-to-end through the real floating.js ----
@@ -547,6 +572,82 @@ function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_G
   });
   assert.equal(env.elements.transcript.value, "should not survive", "the document is unloading - nothing further should change the transcript");
   assert.equal(env.fakeChrome.sentMessages.length, messageCountBefore, "no further commands should be sent once destroy() has run");
+}
+
+// ---- SAYREASON-02: Finish sends each pass's own saved reasoning setting on a Custom profile ----
+
+{
+  const env = buildEnvironment({
+    session: "int-session-reasoning-finish",
+    grammarConfig: {
+      firstPassPrompt: "Clean this up",
+      secondPassPrompt: "Polish this",
+      secondPassEnabled: true,
+      firstPassReasoning: true,
+      secondPassReasoning: false
+    },
+    providerProfile: { providerKind: "custom", endpoint: "https://lmstudio.example-tailnet.ts.net/v1", modelId: "local-model" }
+  });
+  await flush();
+  await flush();
+
+  env.elements.transcript.value = "finish reasoning source text";
+  env.elements.transcript.dispatch("input");
+
+  env.elements.finishButton.dispatch("click");
+  await flush();
+  await flush();
+  await flush();
+
+  assert.equal(env.reasoningCalls.length, 2, "Finish must run both passes through the real dispatcher when the second pass is enabled");
+  assert.equal(env.reasoningCalls[0], "medium", "the first pass sends \"medium\" when firstPassReasoning is on");
+  assert.equal(env.reasoningCalls[1], "none", "the second pass sends \"none\" when secondPassReasoning is off");
+  const insertMessage = env.fakeChrome.insertCalls.at(-1);
+  assert.equal(insertMessage.action, "insert");
+  assert.equal(insertMessage.text, "PROCESSED TEXT");
+}
+
+// ---- SAYREASON-02: a live storage change to secondPassReasoning is used by the next second pass ----
+
+{
+  const env = buildEnvironment({
+    session: "int-session-reasoning-live",
+    grammarConfig: {
+      firstPassPrompt: "Clean this up",
+      secondPassPrompt: "Polish this",
+      secondPassEnabled: true,
+      firstPassReasoning: false,
+      secondPassReasoning: false
+    },
+    providerProfile: { providerKind: "custom", endpoint: "https://lmstudio.example-tailnet.ts.net/v1", modelId: "local-model" }
+  });
+  await flush();
+  await flush();
+
+  env.elements.transcript.value = "live update source text";
+  env.elements.transcript.dispatch("input");
+  env.elements.firstPassButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.equal(env.reasoningCalls.at(-1), "none", "the first pass sends \"none\" before the live storage change");
+
+  // The real chrome.storage.onChanged listener floating.js registers (floating.js:450-454)
+  // picks this up - the same live-update path the full page's save relies on for
+  // prompts/enable to reach an already-open Floating Slate window.
+  const nextConfig = {
+    firstPassPrompt: "Clean this up",
+    secondPassPrompt: "Polish this",
+    secondPassEnabled: true,
+    firstPassReasoning: false,
+    secondPassReasoning: true
+  };
+  env.fakeChrome.localStore["sayslate-grammar-config"] = nextConfig;
+  env.fakeChrome.fireStorageChange({ "sayslate-grammar-config": { newValue: nextConfig } });
+
+  env.elements.secondPassButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.equal(env.reasoningCalls.at(-1), "medium", "a live storage change that turns secondPassReasoning on makes the next second pass send \"medium\"");
 }
 
 // ---- F3 regression: a synchronous double trigger on the floating surface must issue exactly one generation request ----

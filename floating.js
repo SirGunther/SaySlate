@@ -7,7 +7,9 @@
   const DEFAULT_CONFIG = Object.freeze({
     firstPassPrompt: "",
     secondPassPrompt: "",
-    secondPassEnabled: true
+    secondPassEnabled: true,
+    firstPassReasoning: false,
+    secondPassReasoning: false
   });
   const searchParams = new URLSearchParams(location.search);
   const sessionId = searchParams.get("session") || "";
@@ -46,7 +48,9 @@
     return {
       firstPassPrompt: String(value.firstPassPrompt ?? value.grammarPrompt ?? "").trim(),
       secondPassPrompt: String(value.secondPassPrompt ?? value.refinement ?? "").trim(),
-      secondPassEnabled: value.secondPassEnabled !== false
+      secondPassEnabled: value.secondPassEnabled !== false,
+      firstPassReasoning: value.firstPassReasoning === true,
+      secondPassReasoning: value.secondPassReasoning === true
     };
   }
 
@@ -252,7 +256,8 @@
       }
       const result = await globalThis.SaySlateAIProviderClient.generate({
         profile,
-        userPrompt: `${config.firstPassPrompt}\n\n<transcript>\n${source}\n</transcript>`
+        userPrompt: `${config.firstPassPrompt}\n\n<transcript>\n${source}\n</transcript>`,
+        reasoning: config.firstPassReasoning
       });
       transcript.value = result;
       baseText = result;
@@ -291,7 +296,8 @@
       }
       const result = await globalThis.SaySlateAIProviderClient.generate({
         profile,
-        userPrompt: `${config.secondPassPrompt}\n\n<first_pass_result>\n${source}\n</first_pass_result>`
+        userPrompt: `${config.secondPassPrompt}\n\n<first_pass_result>\n${source}\n</first_pass_result>`,
+        reasoning: config.secondPassReasoning
       });
       transcript.value = result;
       baseText = result;

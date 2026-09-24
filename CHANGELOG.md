@@ -27,7 +27,7 @@ The **AI provider profiles** below (Gemini, OpenAI, Anthropic Claude, and a Cust
 - Added AI provider profiles for **Gemini**, **OpenAI**, **Anthropic Claude**, and a **Custom** OpenAI-compatible endpoint (for LM Studio reached over Tailscale). Each profile keeps its own endpoint, model ID, and key; saving, switching, or deleting one never changes another.
 - Added **Test Connection**, which checks the endpoint, the key, and the exact model ID through the provider's model list, without running a generation or sending any transcript.
 - AI passes now request a structured `{ "text": ... }` result and validate it before use. If the provider rejects the structured request (HTTP 400 or 422), SaySlate retries once as a plain request.
-- Custom profiles send `reasoning_effort: "none"`, so LM Studio answers without a reasoning pass whatever its saved Enable Thinking setting. On the LM Studio host, thinking had taken a pass from about 2 s to about 12 s.
+- Each pass now has its own reasoning switch in the AI prompts panel, off by default. Custom (LM Studio) profiles send `reasoning_effort: "medium"` for a pass with reasoning on and `"none"` otherwise; other providers are unaffected. On the LM Studio host, thinking had taken a pass from about 2 s to about 12 s.
 - The existing Gemini key and model migrate once into a Gemini profile; a deleted or cleared profile is never re-created by that migration.
 - Custom endpoints must be HTTPS. Access is requested for the exact configured origin only, and only when you click Save or Test Connection (`optional_host_permissions: https://*/*`); Gemini and Local Whisper keep their fixed grants.
 - The full-page status badge now shows each AI pass as it runs ("Phase 1", "Phase 2"), then its result, matching Floating Slate.

@@ -175,22 +175,38 @@
             </div>
 
             <form id="promptSettingsForm">
-              <label class="field-label" for="firstPassPromptInput">First-pass prompt</label>
+              <div class="pass-setting-header">
+                <label class="field-label" for="firstPassPromptInput">First-pass prompt</label>
+                <div class="pass-toggle-group">
+                  <label class="pass-toggle" for="firstPassReasoningInput">
+                    <span id="firstPassReasoningState">Reasoning off</span>
+                    <input id="firstPassReasoningInput" type="checkbox" role="switch" aria-label="Use reasoning for the first pass" />
+                    <span class="pass-toggle-track" aria-hidden="true"><span></span></span>
+                  </label>
+                </div>
+              </div>
               <textarea
                 id="firstPassPromptInput"
                 class="settings-textarea prompt-textarea text-surface"
                 rows="5"
                 spellcheck="true"
               ></textarea>
-              <p class="field-help">Applied to the original transcript and writes the initial lower-box result. No default or hidden instruction.</p>
+              <p class="field-help">Applied to the original transcript and writes the initial lower-box result. No default or hidden instruction. Reasoning applies only to Custom (LM Studio) connections.</p>
 
               <div class="pass-setting-header">
                 <label class="field-label" for="secondPassPromptInput">Second-pass prompt</label>
-                <label class="pass-toggle" for="secondPassEnabledInput">
-                  <span id="secondPassToggleState">Enabled</span>
-                  <input id="secondPassEnabledInput" type="checkbox" role="switch" aria-label="Enable second pass" />
-                  <span class="pass-toggle-track" aria-hidden="true"><span></span></span>
-                </label>
+                <div class="pass-toggle-group">
+                  <label class="pass-toggle" for="secondPassReasoningInput">
+                    <span id="secondPassReasoningState">Reasoning off</span>
+                    <input id="secondPassReasoningInput" type="checkbox" role="switch" aria-label="Use reasoning for the second pass" />
+                    <span class="pass-toggle-track" aria-hidden="true"><span></span></span>
+                  </label>
+                  <label class="pass-toggle" for="secondPassEnabledInput">
+                    <span id="secondPassToggleState">Enabled</span>
+                    <input id="secondPassEnabledInput" type="checkbox" role="switch" aria-label="Enable second pass" />
+                    <span class="pass-toggle-track" aria-hidden="true"><span></span></span>
+                  </label>
+                </div>
               </div>
               <textarea
                 id="secondPassPromptInput"
@@ -198,7 +214,7 @@
                 rows="5"
                 spellcheck="true"
               ></textarea>
-              <p class="field-help">Applied to the current lower-box text and replaces that result. Turning this pass off preserves its prompt and skips it in the finish workflow.</p>
+              <p class="field-help">Applied to the current lower-box text and replaces that result. Turning this pass off preserves its prompt and skips it in the finish workflow. Reasoning applies only to Custom (LM Studio) connections.</p>
 
               <div id="promptSettingsError" class="settings-error" role="alert" hidden></div>
 
