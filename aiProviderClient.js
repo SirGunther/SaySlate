@@ -103,7 +103,11 @@
         const reasoningEffort = profile.providerKind === registry().PROVIDER_KINDS.CUSTOM
           ? (reasoning === true ? "medium" : "none")
           : undefined;
-        return requireAdapter("SaySlateOpenAICompatibleClient").generate({ ...adapterArgs, reasoningEffort });
+        // REQ-004/LD-007: Custom (LM Studio) profiles stream so a long-running pass is
+        // measured on silence, not total time (SAYREASON-01A). OpenAI passes no `stream`
+        // and keeps its existing non-streamed, total-time-bounded request untouched.
+        const stream = profile.providerKind === registry().PROVIDER_KINDS.CUSTOM ? true : undefined;
+        return requireAdapter("SaySlateOpenAICompatibleClient").generate({ ...adapterArgs, reasoningEffort, stream });
       }
       case transportKinds.ANTHROPIC_MESSAGES: {
         if (!credential) {

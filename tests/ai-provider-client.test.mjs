@@ -21,6 +21,7 @@ function createContext(fetchImplementation) {
   const context = {
     AbortController,
     URL,
+    TextDecoder,
     fetch: fetchImplementation,
     window: { setTimeout, clearTimeout }
   };
@@ -32,6 +33,32 @@ function createContext(fetchImplementation) {
   vm.runInContext(anthropicSource, context);
   vm.runInContext(dispatcherSource, context);
   return context.SaySlateAIProviderClient;
+}
+
+// SAYREASON-01A: the dispatcher now sends `stream: true` for every Custom (LM Studio)
+// profile (EV-030), so a Custom-profile fake must answer the SSE shape LM Studio really
+// uses or the adapter's JSON-fallback path (not the streamed path) would be all that ever
+// ran in this dispatcher-level suite. One `data:` chunk carries the whole canonical-text
+// content, followed by `data: [DONE]`, matching openai-compatible-client.test.mjs's shape.
+function sseResponseFor(text) {
+  const chunk = `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify({ text }) } }] })}\ndata: [DONE]\n`;
+  return {
+    ok: true,
+    status: 200,
+    headers: { get: (name) => (name.toLowerCase() === "content-type" ? "text/event-stream" : null) },
+    body: {
+      getReader() {
+        let sent = false;
+        return {
+          async read() {
+            if (sent) return { done: true, value: undefined };
+            sent = true;
+            return { done: false, value: new TextEncoder().encode(chunk) };
+          }
+        };
+      }
+    }
+  };
 }
 
 const REGISTRY_PRESETS = (() => {
@@ -103,7 +130,7 @@ const REGISTRY_PRESETS = (() => {
   let request;
   const client = createContext(async (url, options) => {
     request = { url, options };
-    return { ok: true, status: 200, async json() { return { choices: [{ message: { content: JSON.stringify({ text: "Custom result." }) } }] }; } };
+    return sseResponseFor("Custom result.");
   });
 
   const profile = {
@@ -215,7 +242,7 @@ const REGISTRY_PRESETS = (() => {
   let request;
   const client = createContext(async (url, options) => {
     request = { url, options };
-    return { ok: true, status: 200, async json() { return { choices: [{ message: { content: JSON.stringify({ text: "Custom result." }) } }] }; } };
+    return sseResponseFor("Custom result.");
   });
 
   const profile = {
@@ -228,6 +255,8 @@ const REGISTRY_PRESETS = (() => {
   await client.generate({ profile, userPrompt: "perform this pass", reasoning: true });
 
   assert.equal(JSON.parse(request.options.body).reasoning_effort, "medium");
+  // SAYREASON-01A: Custom with reasoning:true still streams (LD-007).
+  assert.equal(JSON.parse(request.options.body).stream, true);
 
   console.log("Dispatcher custom/LM Studio reasoning:true sends reasoning_effort medium verified.");
 }
@@ -239,7 +268,7 @@ const REGISTRY_PRESETS = (() => {
   let request;
   const client = createContext(async (url, options) => {
     request = { url, options };
-    return { ok: true, status: 200, async json() { return { choices: [{ message: { content: JSON.stringify({ text: "Custom result." }) } }] }; } };
+    return sseResponseFor("Custom result.");
   });
 
   const profile = {
@@ -252,6 +281,8 @@ const REGISTRY_PRESETS = (() => {
   await client.generate({ profile, userPrompt: "perform this pass", reasoning: false });
 
   assert.equal(JSON.parse(request.options.body).reasoning_effort, "none");
+  // SAYREASON-01A: Custom with reasoning:false still streams (LD-007).
+  assert.equal(JSON.parse(request.options.body).stream, true);
 
   console.log("Dispatcher custom/LM Studio reasoning:false sends reasoning_effort none verified.");
 }
@@ -378,6 +409,30 @@ const REGISTRY_PRESETS = (() => {
   assert.ok(!("reasoning_effort" in JSON.parse(requests[1].options.body)), "The schema-free retry body must not carry reasoning_effort");
 
   console.log("Dispatcher custom/LM Studio schema-free retry omits reasoning_effort verified.");
+}
+
+// ---- Scenario 13 (SAYREASON-01A): OpenAI profile sends no stream field (streaming is
+// Custom-only, LD-007). ----
+
+{
+  let request;
+  const client = createContext(async (url, options) => {
+    request = { url, options };
+    return { ok: true, status: 200, async json() { return { choices: [{ message: { content: JSON.stringify({ text: "OpenAI result." }) } }] }; } };
+  });
+
+  const profile = {
+    providerKind: REGISTRY_PRESETS.PROVIDER_KINDS.OPENAI,
+    endpoint: "https://api.openai.com/v1",
+    modelId: "test-model",
+    credential: "test-key-openai"
+  };
+
+  await client.generate({ profile, userPrompt: "perform this pass" });
+
+  assert.ok(!("stream" in JSON.parse(request.options.body)), "OpenAI profiles must not send a stream field");
+
+  console.log("Dispatcher OpenAI stream field absent verified.");
 }
 
 console.log("AI provider client dispatcher contract boundary verified.");
