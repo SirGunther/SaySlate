@@ -257,6 +257,9 @@ function buildContext({ provider = "browser", aiResponder, processingConfig, pro
     __listeners: {}
   };
 
+  // SAYSTAT-01A: counts real clipboard writes so a scenario can assert Ctrl+Alt+R copied
+  // exactly once, without calling copyResultTranscript directly.
+  const clipboard = { writeCalls: 0 };
   const context = vm.createContext({
     chrome,
     console,
@@ -267,7 +270,7 @@ function buildContext({ provider = "browser", aiResponder, processingConfig, pro
     document,
     window: windowStub,
     localStorage,
-    navigator: { clipboard: { writeText: () => Promise.resolve() } },
+    navigator: { clipboard: { writeText: () => { clipboard.writeCalls += 1; return Promise.resolve(); } } },
     crypto: { randomUUID: () => `uuid-${uuidCounter += 1}` },
     SaySlateAnimations: animations,
     SaySlateSpeech: speech,
@@ -290,7 +293,7 @@ function buildContext({ provider = "browser", aiResponder, processingConfig, pro
   }
   vm.runInContext(appSource, context);
 
-  return { context, document, elements, chrome, speech, aiClient, windowStub };
+  return { context, document, elements, chrome, speech, aiClient, windowStub, clipboard };
 }
 
 // ---- Browser Dictation regression: unchanged path still drives SaySlateSpeech directly ----
@@ -959,11 +962,11 @@ const PROVIDER_PROFILE = Object.freeze({ modelId: "model", credential: "key" });
   assert.equal(elements.statusText.textContent, "Phase 1 ready");
 }
 
-// ---- Dictation during a pass: Ctrl+Alt+D while "Phase 1" is in flight gives "Listening" (EV-026, LD-007) ----
+// ---- Shortcuts during a pass: Ctrl+Alt+D does nothing while "Phase 1" is in flight (LD-008, LD-009) ----
 
 {
   let resolveFirstPass;
-  const { elements, document } = buildContext({
+  const { elements, document, speech } = buildContext({
     providerProfile: PROVIDER_PROFILE,
     processingConfig: FIRST_PASS_ONLY_CONFIG,
     aiResponder: () => new Promise((resolve) => { resolveFirstPass = resolve; })
@@ -975,57 +978,112 @@ const PROVIDER_PROFILE = Object.freeze({ modelId: "model", credential: "key" });
   await flush();
   assert.equal(elements.statusText.textContent, "Phase 1");
 
-  // README shortcut: Ctrl + Alt + D starts dictating, even while the first-pass button is
-  // disabled (EV-026) - handleShortcut calls event.preventDefault(), so the fake event stub
-  // provides it.
+  const startCallsBefore = speech.__calls.start;
+  // README shortcut: Ctrl + Alt + D, the same action as the disabled start button, while
+  // the first pass is in flight (EV-026, LD-008).
   document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "d", preventDefault() {}, target: null });
-  assert.equal(elements.statusPill.dataset.state, "listening", "Ctrl+Alt+D must start dictation while a pass runs (EV-026)");
-  assert.equal(elements.statusText.textContent, "Listening");
-
-  // Settling the pass while dictating must not override "Listening" (LD-007).
-  resolveFirstPass("first pass output");
-  await flush();
-  assert.equal(elements.statusText.textContent, "Listening", "a pass settling during dictation must not override Listening");
-
-  // Stopping dictation after the pass already settled returns to "Ready", not the pass's
-  // result - the label was already cleared when the pass settled. By this point the first
-  // pass has finished (firstPassRunning is false again), so the start/stop button itself is
-  // enabled for this dispatched click.
-  assert.equal(elements.startButton.disabled, false, "stop dictating must be enabled for this dispatched click");
-  elements.startButton.dispatch("click");
-  assert.equal(elements.statusPill.dataset.state, "idle");
-  assert.equal(elements.statusText.textContent, "Ready");
-}
-
-// ---- Dictation during a pass: stopping dictation while it is still in flight shows that pass instead (LD-007) ----
-
-{
-  let resolveFirstPass;
-  const { elements, document } = buildContext({
-    providerProfile: PROVIDER_PROFILE,
-    processingConfig: FIRST_PASS_ONLY_CONFIG,
-    aiResponder: () => new Promise((resolve) => { resolveFirstPass = resolve; })
-  });
-  await flush();
-  typeTranscript(elements, "hello world");
-
-  elements.firstPassButton.dispatch("click");
-  await flush();
-
-  document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "d", preventDefault() {}, target: null });
-  assert.equal(elements.statusText.textContent, "Listening");
-
-  // The start/stop button is disabled while the first pass runs (app.js:878), so a real
-  // user stops dictation here with the same Ctrl+Alt+D shortcut used to start it, not a
-  // click on the disabled button.
-  document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "d", preventDefault() {}, target: null });
-  assert.equal(elements.statusPill.dataset.state, "processing", "stopping dictation while the pass is still in flight must show that pass, not Ready (LD-007)");
+  assert.equal(speech.__calls.start, startCallsBefore, "Ctrl+Alt+D must not start dictation while a pass runs (LD-008)");
+  assert.equal(elements.statusPill.dataset.state, "processing", "the badge must keep showing the running pass (LD-009)");
   assert.equal(elements.statusText.textContent, "Phase 1");
+  assert.equal(elements.toastMessage.textContent, "AI processing is already running");
 
   resolveFirstPass("first pass output");
   await flush();
   assert.equal(elements.statusPill.dataset.state, "complete");
   assert.equal(elements.statusText.textContent, "Phase 1 ready");
+
+  // Once the pass has settled, the same shortcut starts dictation normally.
+  assert.equal(elements.startButton.disabled, false, "start dictating must be enabled for this dispatched keydown");
+  document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "d", preventDefault() {}, target: null });
+  assert.equal(elements.statusPill.dataset.state, "listening");
+  assert.equal(elements.statusText.textContent, "Listening");
+}
+
+// ---- Shortcuts during a pass: Ctrl+Alt+X does nothing while "Phase 1" is in flight (LD-008, LD-009) ----
+
+{
+  let callCount = 0;
+  let resolveSecondRun;
+  const { elements, document } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: FIRST_PASS_ONLY_CONFIG,
+    aiResponder: () => {
+      callCount += 1;
+      if (callCount === 1) return "first pass output";
+      return new Promise((resolve) => { resolveSecondRun = resolve; });
+    }
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusText.textContent, "Phase 1 ready", "a prior result must already be showing");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "processing");
+  assert.equal(elements.statusText.textContent, "Phase 1");
+
+  const transcriptBefore = elements.transcript.value;
+  const resultBefore = elements.resultTranscript.value;
+  // README shortcut: Ctrl + Alt + X, the same action as the disabled clear button, while
+  // the first pass is in flight (EV-025, LD-008).
+  document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "x", preventDefault() {}, target: null });
+  assert.equal(elements.transcript.value, transcriptBefore, "the transcript must be unchanged (LD-008)");
+  assert.equal(elements.resultTranscript.value, resultBefore, "the processed result must be unchanged (LD-008)");
+  assert.equal(elements.statusPill.dataset.state, "processing", "the badge must keep showing the running pass (LD-009)");
+  assert.equal(elements.statusText.textContent, "Phase 1");
+  assert.equal(elements.toastMessage.textContent, "AI processing is already running");
+
+  resolveSecondRun("second run output");
+  await flush();
+}
+
+// ---- Shortcuts during a pass: Ctrl+Alt+D and Ctrl+Alt+R do nothing while "Phase 2" is in flight (LD-008, LD-009) ----
+
+{
+  let resolveSecondPass;
+  const { elements, document, speech, clipboard } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: BOTH_PASSES_CONFIG,
+    aiResponder: (options) => (options.userPrompt.includes("<transcript>")
+      ? "first pass output"
+      : new Promise((resolve) => { resolveSecondPass = resolve; }))
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  elements.secondPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "processing");
+  assert.equal(elements.statusText.textContent, "Phase 2");
+
+  const startCallsBefore = speech.__calls.start;
+  const clipboardCallsBefore = clipboard.writeCalls;
+  document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "d", preventDefault() {}, target: null });
+  assert.equal(speech.__calls.start, startCallsBefore, "Ctrl+Alt+D must not start dictation while the second pass runs (LD-008)");
+  assert.equal(elements.statusPill.dataset.state, "processing", "the badge must keep showing the running pass (LD-009)");
+  assert.equal(elements.statusText.textContent, "Phase 2");
+  assert.equal(elements.toastMessage.textContent, "AI processing is already running");
+
+  document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "r", preventDefault() {}, target: null });
+  assert.equal(clipboard.writeCalls, clipboardCallsBefore, "Ctrl+Alt+R must not copy while the second pass runs (LD-008)");
+  assert.equal(elements.statusPill.dataset.state, "processing");
+  assert.equal(elements.statusText.textContent, "Phase 2");
+  assert.equal(elements.toastMessage.textContent, "AI processing is already running");
+
+  resolveSecondPass("second pass output");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "complete");
+  assert.equal(elements.statusText.textContent, "Phase 2 ready");
+
+  assert.equal(elements.copyResultButton.disabled, false, "copy result must be enabled for this dispatched keydown");
+  document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "r", preventDefault() {}, target: null });
+  await flush();
+  assert.equal(clipboard.writeCalls, clipboardCallsBefore + 1, "Ctrl+Alt+R must copy exactly once once the pass has settled");
 }
 
 console.log("Full-page Local Whisper dictation integration, Browser Dictation regression, ordering guarantees, and AI-pass status badge verified.");

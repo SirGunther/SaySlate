@@ -35,6 +35,7 @@ The **AI provider profiles** below (Gemini, OpenAI, Anthropic Claude, and a Cust
 ### Fixed
 
 - AI provider failures on the full page and Floating Slate now show the HTTP status and, for Gemini, Google's own reason (for example, HTTP 503 "This model is currently experiencing high demand"), instead of only "The provider request failed."
+- On the full page, Ctrl+Alt+D and Ctrl+Alt+X no longer act while an AI pass runs, and Ctrl+Alt+R no longer copies while the second pass runs, matching their buttons.
 
 ### Safety
 
