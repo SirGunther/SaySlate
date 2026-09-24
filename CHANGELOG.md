@@ -16,12 +16,24 @@ This file records verified SaySlate changes. It does not infer missing release n
 
 The **Local Whisper** dictation provider below is implemented and passes every automated check, but is not yet cut as a numbered release. Per this project's own release rule, the manifest version, this file's version heading, and `ROADMAP.md` are updated only after the pending real-runtime acceptance items in the [v1.12.0 validation review](docs/review/v1.12.0-whisperservice-local-dictation-validation-review.md) (live WhisperService, live microphone, installed-extension reload) pass. The installed manifest remains `1.11.5` until then.
 
+The **AI provider profiles** below (Gemini, OpenAI, Anthropic Claude, and a Custom OpenAI-compatible endpoint for LM Studio over Tailscale) are also unreleased. The Custom LM Studio path has passed a real end-to-end run, but its acceptance record (`docs/review/ai-provider-tailscale-validation-review.md`) has not been written yet, so the manifest stays `1.11.5` for this work too.
+
 ### Added
 
 - Added a user-selectable **Local Whisper** dictation provider backed by the manually started WhisperService server at `http://127.0.0.1:8178`, alongside the existing Browser Dictation path.
 - Added a dependency-light WhisperService protocol client, a mono/16 kHz/PCM16 microphone capture pipeline, and a versioned dictation-settings module with a compact provider/status/token/preview-cadence panel in the top toolbar.
 - Added a shared offscreen Local Whisper host so both the full page and Floating Slate can dictate through the same isolated, single-session-at-a-time service connection.
 - Added the least-privilege `http://127.0.0.1:8178/*` host permission; no other host, wildcard, or LAN access was introduced.
+- Added AI provider profiles for **Gemini**, **OpenAI**, **Anthropic Claude**, and a **Custom** OpenAI-compatible endpoint (for LM Studio reached over Tailscale). Each profile keeps its own endpoint, model ID, and key; saving, switching, or deleting one never changes another.
+- Added **Test Connection**, which checks the endpoint, the key, and the exact model ID through the provider's model list, without running a generation or sending any transcript.
+- AI passes now request a structured `{ "text": ... }` result and validate it before use. If the provider rejects the structured request (HTTP 400 or 422), SaySlate retries once as a plain request.
+- Custom profiles send `reasoning_effort: "none"`, so LM Studio answers without a reasoning pass whatever its saved Enable Thinking setting. On the LM Studio host, thinking had taken a pass from about 2 s to about 12 s.
+- The existing Gemini key and model migrate once into a Gemini profile; a deleted or cleared profile is never re-created by that migration.
+- Custom endpoints must be HTTPS. Access is requested for the exact configured origin only, and only when you click Save or Test Connection (`optional_host_permissions: https://*/*`); Gemini and Local Whisper keep their fixed grants.
+
+### Fixed
+
+- AI provider failures on the full page and Floating Slate now show the HTTP status and, for Gemini, Google's own reason (for example, HTTP 503 "This model is currently experiencing high demand"), instead of only "The provider request failed."
 
 ### Safety
 
@@ -30,6 +42,7 @@ The **Local Whisper** dictation provider below is implemented and passes every a
 - Kept the WebSocket connection URL limited to the single-use ticket returned by the service; the token never appears in a URL, log, or error message.
 - Created a fresh WhisperService session and microphone pipeline for every dictation run; no session id, revision, or partial/final text carries into the next run, and overlapping starts are rejected rather than double-connected.
 - Preserved every existing prompt, AI-pass order, copy/insertion action, and the ChatGPT adapter unchanged; this work changes dictation intake only.
+- AI provider keys live only in `chrome.storage.local`. A saved key is never written back into an input or shown, and provider failure messages redact it.
 
 ### Verification
 
@@ -38,6 +51,9 @@ The **Local Whisper** dictation provider below is implemented and passes every a
 - `tests/verify.mjs` is now the single standard verification command: it runs every `tests/*.test.mjs` file itself (not just checking that they exist) before running its own static checks.
 - Fixed a stale test assertion in the existing offscreen-speech suite that checked the wrong Stop ordering; the production code already correctly waits for the microphone/worklet to flush before sending the WhisperService stop control.
 - Kept browser automation disabled; live validation against a running WhisperService instance, a real microphone, and the installed extension remains pending.
+- Added focused tests for AI provider settings, the registry and permissions, each transport, Test Connection, the dispatcher, and the provider UI; `node tests/verify.mjs` passes.
+- Live, 2026-09-23: from the Chrome machine, a Custom profile reached LM Studio (`google/gemma-4-12b-qat`) through Tailscale Serve, and both Test Connection and a first pass succeeded. Against a local LM Studio, the real client sending `reasoning_effort: "none"` returned 0 reasoning tokens.
+- Live, 2026-09-23: Gemini requests reached Google and the key was accepted, but `gemini-3.1-flash-lite` answered HTTP 503 (high demand), so a successful Gemini generation on this build has not been observed yet. OpenAI and Claude profiles have not been run live.
 
 ### Documentation
 
