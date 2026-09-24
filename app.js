@@ -100,6 +100,10 @@
   let firstPassRunning = false;
   let secondPassRunning = false;
   let finishWorkflowRunning = false;
+  // LD-006/LD-007: "Phase 1", "Phase 2", or "" - the pass whose provider request is
+  // currently in flight, so the badge can be restored to it over a discard, clear, or a
+  // dictation stop that happened while that request was still running.
+  let activePassLabel = "";
   let resultSource = "";
   let resultStage = "first";
   let recognitionFatalError = false;
@@ -705,6 +709,9 @@
     resultStage = "first";
     resultSection.hidden = true;
     persistResultTranscript();
+    // LD-006: a discard during dictation keeps "Listening"; a discard during a pass request
+    // keeps "Phase N" rather than reporting a still-running stage as "Ready".
+    if (!isListening && !activePassLabel) setStatus("idle", "Ready");
     if (announce) showToast("Processed result discarded");
   }
 
@@ -763,6 +770,9 @@
       }
 
       hideNotice();
+      // LD-003/LD-005: the badge tracks this pass's request from here until it settles.
+      activePassLabel = "Phase 1";
+      setStatus("processing", "Phase 1");
       const processed = await globalThis.SaySlateAIProviderClient.generate({
         profile,
         userPrompt: buildFirstPassPrompt(sourceText)
@@ -772,12 +782,16 @@
       resultStage = "first";
       persistResultTranscript();
       showResultTranscript({ scroll });
+      // LD-007: dictation that started during the request owns the badge until it stops.
+      if (!isListening) setStatus("complete", "Phase 1 ready");
       if (announce) showToast("First pass complete · Original preserved");
       return true;
     } catch (error) {
+      if (!isListening) setStatus("error", "Phase 1 failed");
       showNotice(friendlyProcessingError(error, "First pass"), "error");
       return false;
     } finally {
+      activePassLabel = "";
       setFirstPassRunning(false);
     }
   }
@@ -815,6 +829,9 @@
       }
 
       hideNotice();
+      // LD-003/LD-005: the badge tracks this pass's request from here until it settles.
+      activePassLabel = "Phase 2";
+      setStatus("processing", "Phase 2");
       const processed = await globalThis.SaySlateAIProviderClient.generate({
         profile,
         userPrompt: buildSecondPassPrompt(sourceText)
@@ -823,12 +840,16 @@
       resultStage = "second";
       persistResultTranscript();
       showResultTranscript({ scroll });
+      // LD-007: dictation that started during the request owns the badge until it stops.
+      if (!isListening) setStatus("complete", "Phase 2 ready");
       if (announce) showToast("Second pass complete · Lower result replaced");
       return true;
     } catch (error) {
+      if (!isListening) setStatus("error", "Phase 2 failed");
       showNotice(friendlyProcessingError(error, "Second pass"), "error");
       return false;
     } finally {
+      activePassLabel = "";
       setSecondPassRunning(false);
     }
   }
@@ -913,7 +934,13 @@
     if (listening) {
       setStatus("listening", "Listening");
     } else if (statusPill.dataset.state !== "error") {
-      setStatus("idle", "Ready");
+      // LD-007: stopping dictation while a pass request is still in flight reports that
+      // pass instead of "Ready", which would show a running stage as finished.
+      if (activePassLabel) {
+        setStatus("processing", activePassLabel);
+      } else {
+        setStatus("idle", "Ready");
+      }
     }
   }
 

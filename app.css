@@ -683,6 +683,28 @@ html[data-theme="dark"] .moon-icon {
   background: var(--danger);
 }
 
+/* LD-005/EV-013: matches Floating Slate's processing/complete hues (floating.css:80-85) so
+   the full page reports an AI pass the same way. */
+.status-pill[data-state="processing"] {
+  border-color: #aebfd0;
+  background: color-mix(in srgb, #5b7fa3 12%, transparent);
+  color: #5b7fa3;
+}
+
+.status-pill[data-state="processing"] .status-dot {
+  background: #5b7fa3;
+}
+
+.status-pill[data-state="complete"] {
+  border-color: var(--accent);
+  background: var(--accent-pale);
+  color: var(--accent);
+}
+
+.status-pill[data-state="complete"] .status-dot {
+  background: var(--accent);
+}
+
 [data-tooltip] {
   position: relative;
 }
@@ -1216,6 +1238,19 @@ html[data-theme="dark"] .status-pill[data-state="listening"] {
 html[data-theme="dark"] .status-pill[data-state="error"] {
   border-color: rgba(227, 70, 113, 0.32);
   color: #fc6b83;
+}
+
+/* EV-008/LD-005: "processing" uses a fixed hue (matching Floating Slate) rather than a
+   theme variable, so it needs its own dark legibility pass, same as listening/error above.
+   "complete" needs no override here - its border/background/color are all var(--accent) /
+   var(--accent-pale), which already resolve to the dark palette from :root's dark block. */
+html[data-theme="dark"] .status-pill[data-state="processing"] {
+  border-color: rgba(91, 127, 163, 0.4);
+  color: #9fbcdb;
+}
+
+html[data-theme="dark"] .status-pill[data-state="processing"] .status-dot {
+  background: #9fbcdb;
 }
 
 html[data-theme="dark"] .slate {

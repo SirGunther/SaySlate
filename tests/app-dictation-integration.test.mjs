@@ -98,6 +98,11 @@ function buildFakeDom() {
   elements.notice.hidden = true;
   elements.resultSection.hidden = true;
   elements.toast.hidden = true;
+  // SAYSTAT-01: mirrors app.html's real starting markup (EV-001) - #statusPill starts
+  // data-state="idle" with "Ready" text - so a scenario that expects no badge change (e.g.
+  // no active profile) has a real starting value to assert against.
+  elements.statusPill.dataset.state = "idle";
+  elements.statusText.textContent = "Ready";
 
   const documentElement = { dataset: {} };
   const document = {
@@ -694,4 +699,324 @@ function buildContext({ provider = "browser", aiResponder, processingConfig, pro
   assert.equal(cancelMessage.sessionId, sessionId);
 }
 
-console.log("Full-page Local Whisper dictation integration, Browser Dictation regression, and ordering guarantees verified.");
+// ---- SAYSTAT-01: full-page status badge tracks each AI pass, matching Floating Slate ----
+// Every scenario below drives the real click handlers (or a README-shortcut keydown) through
+// buildContext's real app.js/aiProviderClient.js wiring (EV-018); none calls setStatus or a
+// pass function directly. A deferred aiResponder lets a scenario observe the badge while a
+// pass's provider request is still in flight, then settle it and observe the result state.
+
+function typeTranscript(elements, text) {
+  elements.transcript.value = text;
+  elements.transcript.dispatch("input");
+}
+
+const FIRST_PASS_ONLY_CONFIG = Object.freeze({
+  firstPassPrompt: "First pass prompt", secondPassPrompt: "", secondPassEnabled: false, promptSchemaVersion: 3
+});
+const BOTH_PASSES_CONFIG = Object.freeze({
+  firstPassPrompt: "First pass prompt", secondPassPrompt: "Second pass prompt", secondPassEnabled: true, promptSchemaVersion: 3
+});
+const PROVIDER_PROFILE = Object.freeze({ modelId: "model", credential: "key" });
+
+// ---- First pass: processing / "Phase 1" while in flight, then complete / "Phase 1 ready" ----
+
+{
+  let resolveFirstPass;
+  const { elements } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: FIRST_PASS_ONLY_CONFIG,
+    aiResponder: () => new Promise((resolve) => { resolveFirstPass = resolve; })
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+  assert.equal(elements.firstPassButton.disabled, false, "the first-pass button must be enabled for this dispatched click");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "processing");
+  assert.equal(elements.statusText.textContent, "Phase 1");
+
+  resolveFirstPass("first pass output");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "complete");
+  assert.equal(elements.statusText.textContent, "Phase 1 ready");
+}
+
+// ---- Second pass: processing / "Phase 2" while in flight, then complete / "Phase 2 ready" ----
+
+{
+  let resolveSecondPass;
+  const { elements } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: BOTH_PASSES_CONFIG,
+    aiResponder: (options) => (options.userPrompt.includes("<transcript>")
+      ? "first pass output"
+      : new Promise((resolve) => { resolveSecondPass = resolve; }))
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusText.textContent, "Phase 1 ready");
+
+  assert.equal(elements.secondPassButton.disabled, false, "the second-pass button must be enabled for this dispatched click");
+  elements.secondPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "processing");
+  assert.equal(elements.statusText.textContent, "Phase 2");
+
+  resolveSecondPass("second pass output");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "complete");
+  assert.equal(elements.statusText.textContent, "Phase 2 ready");
+}
+
+// ---- Failure: a rejected pass ends at error / "Phase 1 failed"; transcript and any prior result are preserved ----
+
+{
+  let callCount = 0;
+  const { elements } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: FIRST_PASS_ONLY_CONFIG,
+    aiResponder: () => {
+      callCount += 1;
+      return callCount === 1 ? "first pass output" : Promise.reject(new Error("provider rejected the request"));
+    }
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.resultTranscript.value, "first pass output", "a prior result must already be showing before the failing run");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "error");
+  assert.equal(elements.statusText.textContent, "Phase 1 failed");
+  assert.equal(elements.transcript.value, "hello world", "the transcript must be preserved on failure");
+  assert.equal(elements.resultTranscript.value, "first pass output", "the prior result must be preserved on failure");
+}
+
+// ---- No active profile: the badge still reads "Ready" and no provider request is sent (EV-005) ----
+
+{
+  const { elements, aiClient } = buildContext({
+    processingConfig: FIRST_PASS_ONLY_CONFIG
+    // No providerProfile seeded, so hasActiveProfile() is false.
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  assert.equal(aiClient.calls.length, 0, "no provider request must be sent without an active profile");
+  assert.equal(elements.statusPill.dataset.state, "idle");
+  assert.equal(elements.statusText.textContent, "Ready");
+}
+
+// ---- Finish, second pass enabled: "Phase 1", then "Phase 2", each observed in flight, then idle / "Ready" after the final clear ----
+
+{
+  let resolveFirstPass;
+  let resolveSecondPass;
+  const { elements } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: BOTH_PASSES_CONFIG,
+    aiResponder: (options) => (options.userPrompt.includes("<transcript>")
+      ? new Promise((resolve) => { resolveFirstPass = resolve; })
+      : new Promise((resolve) => { resolveSecondPass = resolve; }))
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  assert.equal(elements.finishWorkflowButton.disabled, false, "Finish must be enabled for this dispatched click");
+  elements.finishWorkflowButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "processing");
+  assert.equal(elements.statusText.textContent, "Phase 1");
+
+  resolveFirstPass("first pass output");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "processing");
+  assert.equal(elements.statusText.textContent, "Phase 2");
+
+  resolveSecondPass("second pass output");
+  await flush();
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "idle");
+  assert.equal(elements.statusText.textContent, "Ready");
+  assert.equal(elements.transcript.value, "", "Finish clears the transcript only after both passes and the final copy succeed");
+}
+
+// ---- Finish, second pass fails: ends at error / "Phase 2 failed"; the transcript is not cleared ----
+
+{
+  let resolveFirstPass;
+  const { elements } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: BOTH_PASSES_CONFIG,
+    aiResponder: (options) => (options.userPrompt.includes("<transcript>")
+      ? new Promise((resolve) => { resolveFirstPass = resolve; })
+      : Promise.reject(new Error("second pass rejected")))
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  elements.finishWorkflowButton.dispatch("click");
+  await flush();
+
+  resolveFirstPass("first pass output");
+  await flush();
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "error");
+  assert.equal(elements.statusText.textContent, "Phase 2 failed");
+  assert.equal(elements.transcript.value, "hello world", "Finish must not clear the transcript when the second pass fails");
+}
+
+// ---- Discard: discarding after "Phase 2 ready" gives "Ready"; discarding while dictating keeps "Listening" ----
+
+{
+  const { elements } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: BOTH_PASSES_CONFIG,
+    aiResponder: (options) => (options.userPrompt.includes("<transcript>") ? "first pass output" : "second pass output")
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  elements.secondPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusText.textContent, "Phase 2 ready");
+
+  assert.equal(elements.discardResultButton.disabled, false, "discard must be enabled for this dispatched click");
+  elements.discardResultButton.dispatch("click");
+  assert.equal(elements.statusPill.dataset.state, "idle");
+  assert.equal(elements.statusText.textContent, "Ready");
+}
+
+{
+  const { elements } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: FIRST_PASS_ONLY_CONFIG,
+    aiResponder: () => "first pass output"
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusText.textContent, "Phase 1 ready");
+
+  elements.startButton.dispatch("click");
+  assert.equal(elements.statusText.textContent, "Listening");
+
+  elements.discardResultButton.dispatch("click");
+  assert.equal(elements.statusPill.dataset.state, "listening", "a discard while dictating must not override Listening (LD-005/EV-003)");
+  assert.equal(elements.statusText.textContent, "Listening");
+}
+
+// ---- Discard during a pass: discarding while "Phase 1" is in flight keeps processing / "Phase 1"; complete / "Phase 1 ready" when it settles (EV-025, LD-006) ----
+
+{
+  let callCount = 0;
+  let resolveSecondRun;
+  const { elements } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: FIRST_PASS_ONLY_CONFIG,
+    aiResponder: () => {
+      callCount += 1;
+      if (callCount === 1) return "first pass output";
+      return new Promise((resolve) => { resolveSecondRun = resolve; });
+    }
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusText.textContent, "Phase 1 ready", "a prior result must already be showing");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "processing");
+  assert.equal(elements.statusText.textContent, "Phase 1");
+  assert.equal(elements.discardResultButton.disabled, false, "discard must stay enabled while the first pass runs (EV-025)");
+
+  elements.discardResultButton.dispatch("click");
+  assert.equal(elements.statusPill.dataset.state, "processing", "a discard during a pass request must not report Ready while it is still running (LD-006)");
+  assert.equal(elements.statusText.textContent, "Phase 1");
+
+  resolveSecondRun("second run output");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "complete");
+  assert.equal(elements.statusText.textContent, "Phase 1 ready");
+}
+
+// ---- Dictation during a pass: Ctrl+Alt+D while "Phase 1" is in flight gives "Listening" (EV-026, LD-007) ----
+
+{
+  let resolveFirstPass;
+  const { elements, document } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: FIRST_PASS_ONLY_CONFIG,
+    aiResponder: () => new Promise((resolve) => { resolveFirstPass = resolve; })
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+  assert.equal(elements.statusText.textContent, "Phase 1");
+
+  // README shortcut: Ctrl + Alt + D starts dictating, even while the first-pass button is
+  // disabled (EV-026) - handleShortcut calls event.preventDefault(), so the fake event stub
+  // provides it.
+  document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "d", preventDefault() {}, target: null });
+  assert.equal(elements.statusPill.dataset.state, "listening", "Ctrl+Alt+D must start dictation while a pass runs (EV-026)");
+  assert.equal(elements.statusText.textContent, "Listening");
+
+  // Settling the pass while dictating must not override "Listening" (LD-007).
+  resolveFirstPass("first pass output");
+  await flush();
+  assert.equal(elements.statusText.textContent, "Listening", "a pass settling during dictation must not override Listening");
+
+  // Stopping dictation after the pass already settled returns to "Ready", not the pass's
+  // result - the label was already cleared when the pass settled.
+  elements.startButton.dispatch("click");
+  assert.equal(elements.statusPill.dataset.state, "idle");
+  assert.equal(elements.statusText.textContent, "Ready");
+}
+
+// ---- Dictation during a pass: stopping dictation while it is still in flight shows that pass instead (LD-007) ----
+
+{
+  let resolveFirstPass;
+  const { elements, document } = buildContext({
+    providerProfile: PROVIDER_PROFILE,
+    processingConfig: FIRST_PASS_ONLY_CONFIG,
+    aiResponder: () => new Promise((resolve) => { resolveFirstPass = resolve; })
+  });
+  await flush();
+  typeTranscript(elements, "hello world");
+
+  elements.firstPassButton.dispatch("click");
+  await flush();
+
+  document.dispatch("keydown", { ctrlKey: true, altKey: true, key: "d", preventDefault() {}, target: null });
+  assert.equal(elements.statusText.textContent, "Listening");
+
+  elements.startButton.dispatch("click");
+  assert.equal(elements.statusPill.dataset.state, "processing", "stopping dictation while the pass is still in flight must show that pass, not Ready (LD-007)");
+  assert.equal(elements.statusText.textContent, "Phase 1");
+
+  resolveFirstPass("first pass output");
+  await flush();
+  assert.equal(elements.statusPill.dataset.state, "complete");
+  assert.equal(elements.statusText.textContent, "Phase 1 ready");
+}
+
+console.log("Full-page Local Whisper dictation integration, Browser Dictation regression, ordering guarantees, and AI-pass status badge verified.");
