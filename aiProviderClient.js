@@ -97,7 +97,10 @@
       case transportKinds.OPENAI_CHAT_COMPLETIONS: {
         // EV-014: LM Studio/custom endpoints may run without authentication, so the
         // credential is not required here - the adapter omits Bearer auth when blank.
-        return requireAdapter("SaySlateOpenAICompatibleClient").generate(adapterArgs);
+        // LD-041: custom (LM Studio) profiles ask for no reasoning pass (EV-035). OpenAI
+        // profiles never send it: OpenAI rejects reasoning_effort on non-reasoning models.
+        const reasoningEffort = profile.providerKind === registry().PROVIDER_KINDS.CUSTOM ? "none" : undefined;
+        return requireAdapter("SaySlateOpenAICompatibleClient").generate({ ...adapterArgs, reasoningEffort });
       }
       case transportKinds.ANTHROPIC_MESSAGES: {
         if (!credential) {

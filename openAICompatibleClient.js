@@ -77,7 +77,8 @@
     schema,
     fetchImpl,
     timeoutMs = DEFAULT_TIMEOUT_MS,
-    signal
+    signal,
+    reasoningEffort
   }) {
     const timeoutController = new AbortController();
     const timeout = window.setTimeout(() => timeoutController.abort(), timeoutMs);
@@ -95,6 +96,9 @@
           json_schema: { name: SCHEMA_NAME, strict: true, schema }
         }
       };
+      // LD-041: sent only when the dispatcher asks for it, and only on this request; the
+      // schema-free retry below stays the plain request for servers that reject the field.
+      if (reasoningEffort) schemaBody.reasoning_effort = reasoningEffort;
 
       let response;
       try {

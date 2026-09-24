@@ -252,3 +252,47 @@ const ENDPOINT = "https://api.openai.com/v1";
 }
 
 console.log("OpenAI-compatible client contract boundary verified.");
+
+// ---- LD-041: reasoning_effort is sent only when asked, and only on the structured request;
+// a schema rejection's plain retry omits it, as it omits response_format. ----
+
+{
+  let callCount = 0;
+  const bodies = [];
+  const client = createClient(async (url, options) => {
+    callCount += 1;
+    bodies.push(JSON.parse(options.body));
+    if (callCount === 1) return { ok: false, status: 400, async json() { return { error: { message: "schema unsupported" } }; } };
+    return { ok: true, status: 200, async json() { return { choices: [{ message: { content: "Plain retried text." } }] }; } };
+  });
+
+  const result = await client.generate({
+    endpoint: "https://lmstudio.example-tailnet.ts.net/v1",
+    credential: "",
+    modelId: "local-model",
+    systemPrompt: "",
+    userPrompt: "perform this pass",
+    schema: SCHEMA,
+    reasoningEffort: "none"
+  });
+
+  assert.equal(result, "Plain retried text.");
+  assert.equal(bodies[0].reasoning_effort, "none", "the structured request must carry reasoning_effort");
+  assert.ok(!("reasoning_effort" in bodies[1]), "the plain retry must omit reasoning_effort");
+
+  console.log("LD-041 reasoning_effort on the structured request only verified.");
+}
+
+{
+  let body;
+  const client = createClient(async (url, options) => {
+    body = JSON.parse(options.body);
+    return { ok: true, status: 200, async json() { return { choices: [{ message: { content: JSON.stringify({ text: "ok" }) } }] }; } };
+  });
+
+  await client.generate({ endpoint: ENDPOINT, credential: "k", modelId: "m", systemPrompt: "", userPrompt: "u", schema: SCHEMA });
+
+  assert.ok(!("reasoning_effort" in body), "without reasoningEffort the field must be absent");
+
+  console.log("LD-041 reasoning_effort absent by default verified.");
+}

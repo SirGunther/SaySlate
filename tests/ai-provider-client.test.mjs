@@ -90,6 +90,8 @@ const REGISTRY_PRESETS = (() => {
   assert.equal(result, "OpenAI result.");
   assert.equal(request.url, "https://api.openai.com/v1/chat/completions");
   assert.equal(request.options.headers.Authorization, "Bearer test-key-openai");
+  // LD-041: OpenAI profiles never send reasoning_effort (OpenAI rejects it on non-reasoning models).
+  assert.ok(!("reasoning_effort" in JSON.parse(request.options.body)), "OpenAI profiles must not send reasoning_effort");
 
   console.log("Dispatcher openai-chat-completions routing verified.");
 }
@@ -115,6 +117,8 @@ const REGISTRY_PRESETS = (() => {
 
   assert.equal(result, "Custom result.");
   assert.ok(!("Authorization" in request.options.headers));
+  // LD-041: custom (LM Studio) profiles ask for no reasoning pass on every request.
+  assert.equal(JSON.parse(request.options.body).reasoning_effort, "none");
 
   console.log("Dispatcher custom/LM Studio routing without a credential verified.");
 }
