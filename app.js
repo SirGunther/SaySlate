@@ -106,9 +106,9 @@
   let firstPassRunning = false;
   let secondPassRunning = false;
   let finishWorkflowRunning = false;
-  // LD-006/LD-007: "Phase 1", "Phase 2", or "" - the pass whose provider request is
-  // currently in flight, so the badge can be restored to it over a discard, clear, or a
-  // dictation stop that happened while that request was still running.
+  // LD-006: "Phase 1", "Phase 2", or "" - the pass whose provider request is currently in
+  // flight, so the badge can be restored to it over a discard or clear that happened while
+  // that request was still running.
   let activePassLabel = "";
   let resultSource = "";
   let resultStage = "first";
@@ -841,12 +841,11 @@
       resultStage = "first";
       persistResultTranscript();
       showResultTranscript({ scroll });
-      // LD-007: dictation that started during the request owns the badge until it stops.
-      if (!isListening) setStatus("complete", "Phase 1 ready");
+      setStatus("complete", "Phase 1 ready");
       if (announce) showToast("First pass complete · Original preserved");
       return true;
     } catch (error) {
-      if (!isListening) setStatus("error", "Phase 1 failed");
+      setStatus("error", "Phase 1 failed");
       showNotice(friendlyProcessingError(error, "First pass"), "error");
       return false;
     } finally {
@@ -900,12 +899,11 @@
       resultStage = "second";
       persistResultTranscript();
       showResultTranscript({ scroll });
-      // LD-007: dictation that started during the request owns the badge until it stops.
-      if (!isListening) setStatus("complete", "Phase 2 ready");
+      setStatus("complete", "Phase 2 ready");
       if (announce) showToast("Second pass complete · Lower result replaced");
       return true;
     } catch (error) {
-      if (!isListening) setStatus("error", "Phase 2 failed");
+      setStatus("error", "Phase 2 failed");
       showNotice(friendlyProcessingError(error, "Second pass"), "error");
       return false;
     } finally {
@@ -994,13 +992,7 @@
     if (listening) {
       setStatus("listening", "Listening");
     } else if (statusPill.dataset.state !== "error") {
-      // LD-007: stopping dictation while a pass request is still in flight reports that
-      // pass instead of "Ready", which would show a running stage as finished.
-      if (activePassLabel) {
-        setStatus("processing", activePassLabel);
-      } else {
-        setStatus("idle", "Ready");
-      }
+      setStatus("idle", "Ready");
     }
   }
 
@@ -1430,6 +1422,16 @@
     event.preventDefault();
     if (finishWorkflowRunning) {
       showToast("Finish workflow is still running");
+      return;
+    }
+    // LD-008: each shortcut does nothing while its button would be disabled for the same
+    // reason (EV-025, EV-026, EV-027) - the toast is the wording Finish already uses above.
+    if ((key === "d" || key === "x") && (firstPassRunning || secondPassRunning)) {
+      showToast("AI processing is already running");
+      return;
+    }
+    if (key === "r" && secondPassRunning) {
+      showToast("AI processing is already running");
       return;
     }
     if (key === "d") {
