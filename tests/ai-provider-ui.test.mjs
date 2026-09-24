@@ -476,9 +476,16 @@ function seedReasoningStore() {
   };
 }
 
-function lastChatCompletionsBody() {
-  const call = [...fetchImpl.__calls].reverse().find((entry) => entry.url.endsWith("/chat/completions"));
-  return JSON.parse(call.options.body);
+// F1 fix: reads reasoning_effort only from the exact /chat/completions call the passed-in
+// action caused (asserting there is exactly one new one), rather than "whatever the shared
+// fetchImpl.__calls log last holds" - a prior version read the log's last entry regardless
+// of whether this scenario's own action had produced it.
+async function reasoningEffortForNextChatCompletion(triggerAction) {
+  const before = fetchImpl.__calls.length;
+  await triggerAction();
+  const newCalls = fetchImpl.__calls.slice(before).filter((entry) => entry.url.endsWith("/chat/completions"));
+  assert.equal(newCalls.length, 1, "this action must issue exactly one new /chat/completions request");
+  return JSON.parse(newCalls[0].options.body).reasoning_effort;
 }
 
 // ---- Defaults: both switches off sends "none" for both passes ----
@@ -500,15 +507,19 @@ function lastChatCompletionsBody() {
   elements.promptSettingsForm.dispatch("submit", { preventDefault() {} });
   await flush();
 
-  elements.firstPassButton.dispatch("click");
-  await flush();
-  await flush();
-  assert.equal(lastChatCompletionsBody().reasoning_effort, "none", "the first pass sends \"none\" when its reasoning switch is off");
+  const firstPassEffort = await reasoningEffortForNextChatCompletion(async () => {
+    elements.firstPassButton.dispatch("click");
+    await flush();
+    await flush();
+  });
+  assert.equal(firstPassEffort, "none", "the first pass sends \"none\" when its reasoning switch is off");
 
-  elements.secondPassButton.dispatch("click");
-  await flush();
-  await flush();
-  assert.equal(lastChatCompletionsBody().reasoning_effort, "none", "the second pass sends \"none\" when its reasoning switch is off");
+  const secondPassEffort = await reasoningEffortForNextChatCompletion(async () => {
+    elements.secondPassButton.dispatch("click");
+    await flush();
+    await flush();
+  });
+  assert.equal(secondPassEffort, "none", "the second pass sends \"none\" when its reasoning switch is off");
 }
 
 // ---- First pass on, second pass off: "medium" then "none" ----
@@ -530,15 +541,19 @@ function lastChatCompletionsBody() {
   elements.promptSettingsForm.dispatch("submit", { preventDefault() {} });
   await flush();
 
-  elements.firstPassButton.dispatch("click");
-  await flush();
-  await flush();
-  assert.equal(lastChatCompletionsBody().reasoning_effort, "medium", "the first pass sends \"medium\" when its reasoning switch is on");
+  const firstPassEffort = await reasoningEffortForNextChatCompletion(async () => {
+    elements.firstPassButton.dispatch("click");
+    await flush();
+    await flush();
+  });
+  assert.equal(firstPassEffort, "medium", "the first pass sends \"medium\" when its reasoning switch is on");
 
-  elements.secondPassButton.dispatch("click");
-  await flush();
-  await flush();
-  assert.equal(lastChatCompletionsBody().reasoning_effort, "none", "the second pass sends \"none\" when its reasoning switch stays off");
+  const secondPassEffort = await reasoningEffortForNextChatCompletion(async () => {
+    elements.secondPassButton.dispatch("click");
+    await flush();
+    await flush();
+  });
+  assert.equal(secondPassEffort, "none", "the second pass sends \"none\" when its reasoning switch stays off");
 }
 
 // ---- First pass off, second pass on: "none" then "medium" ----
@@ -560,15 +575,19 @@ function lastChatCompletionsBody() {
   elements.promptSettingsForm.dispatch("submit", { preventDefault() {} });
   await flush();
 
-  elements.firstPassButton.dispatch("click");
-  await flush();
-  await flush();
-  assert.equal(lastChatCompletionsBody().reasoning_effort, "none", "the first pass sends \"none\" when its reasoning switch stays off");
+  const firstPassEffort = await reasoningEffortForNextChatCompletion(async () => {
+    elements.firstPassButton.dispatch("click");
+    await flush();
+    await flush();
+  });
+  assert.equal(firstPassEffort, "none", "the first pass sends \"none\" when its reasoning switch stays off");
 
-  elements.secondPassButton.dispatch("click");
-  await flush();
-  await flush();
-  assert.equal(lastChatCompletionsBody().reasoning_effort, "medium", "the second pass sends \"medium\" when its reasoning switch is on");
+  const secondPassEffort = await reasoningEffortForNextChatCompletion(async () => {
+    elements.secondPassButton.dispatch("click");
+    await flush();
+    await flush();
+  });
+  assert.equal(secondPassEffort, "medium", "the second pass sends \"medium\" when its reasoning switch is on");
 }
 
 // ---- Reload: a fresh instance over the same storage shows and sends the saved switch state ----
@@ -595,10 +614,12 @@ function lastChatCompletionsBody() {
 
   elements.transcript.value = "reasoning reload source text";
   elements.transcript.dispatch("input");
-  elements.firstPassButton.dispatch("click");
-  await flush();
-  await flush();
-  assert.equal(lastChatCompletionsBody().reasoning_effort, "medium", "a reload sends the saved switch's value, not a fresh default");
+  const firstPassEffort = await reasoningEffortForNextChatCompletion(async () => {
+    elements.firstPassButton.dispatch("click");
+    await flush();
+    await flush();
+  });
+  assert.equal(firstPassEffort, "medium", "a reload sends the saved switch's value, not a fresh default");
 }
 
 // ---- Second pass off: turning it off keeps secondPassReasoning stored; turning it back on sends it ----
@@ -632,13 +653,17 @@ function lastChatCompletionsBody() {
 
   elements.transcript.value = "reasoning second-pass-off source text";
   elements.transcript.dispatch("input");
-  elements.firstPassButton.dispatch("click");
-  await flush();
-  await flush();
-  elements.secondPassButton.dispatch("click");
-  await flush();
-  await flush();
-  assert.equal(lastChatCompletionsBody().reasoning_effort, "medium", "turning the second pass off and back on keeps its reasoning switch's saved value");
+  await reasoningEffortForNextChatCompletion(async () => {
+    elements.firstPassButton.dispatch("click");
+    await flush();
+    await flush();
+  });
+  const secondPassEffort = await reasoningEffortForNextChatCompletion(async () => {
+    elements.secondPassButton.dispatch("click");
+    await flush();
+    await flush();
+  });
+  assert.equal(secondPassEffort, "medium", "turning the second pass off and back on keeps its reasoning switch's saved value");
 }
 
 // ---- Failed save: a switch that fails to save shows its previous value ----
