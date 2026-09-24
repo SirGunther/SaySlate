@@ -31,7 +31,9 @@ const ELEMENT_IDS = [
   // SAYAI-05: LD-027's provider-profile management controls.
   "profileSelect", "providerKindGemini", "providerKindOpenAI", "providerKindAnthropic",
   "providerKindCustom", "endpointInput", "connectionTestStatus", "connectionTestStatusText",
-  "testConnectionButton", "clearCredentialButton", "deleteProfileButton"
+  "testConnectionButton", "clearCredentialButton", "deleteProfileButton",
+  // SAYREASON-02: per-pass reasoning-effort switches and their state labels.
+  "firstPassReasoningInput", "firstPassReasoningState", "secondPassReasoningInput", "secondPassReasoningState"
 ];
 
 function createElement(id) {
