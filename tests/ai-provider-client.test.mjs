@@ -208,4 +208,176 @@ const REGISTRY_PRESETS = (() => {
   console.log("Dispatcher adapter error passthrough verified.");
 }
 
+// ---- Scenario 7: Custom profile with reasoning: true sends reasoning_effort "medium"
+// (LD-003, SAYREASON-01). ----
+
+{
+  let request;
+  const client = createContext(async (url, options) => {
+    request = { url, options };
+    return { ok: true, status: 200, async json() { return { choices: [{ message: { content: JSON.stringify({ text: "Custom result." }) } }] }; } };
+  });
+
+  const profile = {
+    providerKind: REGISTRY_PRESETS.PROVIDER_KINDS.CUSTOM,
+    endpoint: "https://lmstudio.example-tailnet.ts.net/v1",
+    modelId: "local-model",
+    credential: ""
+  };
+
+  await client.generate({ profile, userPrompt: "perform this pass", reasoning: true });
+
+  assert.equal(JSON.parse(request.options.body).reasoning_effort, "medium");
+
+  console.log("Dispatcher custom/LM Studio reasoning:true sends reasoning_effort medium verified.");
+}
+
+// ---- Scenario 8: Custom profile with reasoning: false sends reasoning_effort "none",
+// same as omitting reasoning entirely (LD-003). ----
+
+{
+  let request;
+  const client = createContext(async (url, options) => {
+    request = { url, options };
+    return { ok: true, status: 200, async json() { return { choices: [{ message: { content: JSON.stringify({ text: "Custom result." }) } }] }; } };
+  });
+
+  const profile = {
+    providerKind: REGISTRY_PRESETS.PROVIDER_KINDS.CUSTOM,
+    endpoint: "https://lmstudio.example-tailnet.ts.net/v1",
+    modelId: "local-model",
+    credential: ""
+  };
+
+  await client.generate({ profile, userPrompt: "perform this pass", reasoning: false });
+
+  assert.equal(JSON.parse(request.options.body).reasoning_effort, "none");
+
+  console.log("Dispatcher custom/LM Studio reasoning:false sends reasoning_effort none verified.");
+}
+
+// ---- Scenario 9: OpenAI profile with reasoning: true still never sends reasoning_effort
+// (LD-041: OpenAI rejects it on non-reasoning models; reasoning is Custom-only). ----
+
+{
+  let request;
+  const client = createContext(async (url, options) => {
+    request = { url, options };
+    return { ok: true, status: 200, async json() { return { choices: [{ message: { content: JSON.stringify({ text: "OpenAI result." }) } }] }; } };
+  });
+
+  const profile = {
+    providerKind: REGISTRY_PRESETS.PROVIDER_KINDS.OPENAI,
+    endpoint: "https://api.openai.com/v1",
+    modelId: "test-model",
+    credential: "test-key-openai"
+  };
+
+  await client.generate({ profile, userPrompt: "perform this pass", reasoning: true });
+
+  assert.ok(!("reasoning_effort" in JSON.parse(request.options.body)), "OpenAI profiles must not send reasoning_effort even with reasoning: true");
+
+  console.log("Dispatcher OpenAI reasoning:true still omits reasoning_effort verified.");
+}
+
+// ---- Scenario 10: Gemini profile with reasoning: true produces the same request body as
+// without reasoning - the dispatcher never adds a reasoning field to adapterArgs (LD-003). ----
+
+{
+  let requestWithout;
+  let requestWith;
+
+  const clientWithout = createContext(async (url, options) => {
+    requestWithout = { url, options };
+    return { ok: true, status: 200, async json() { return { candidates: [{ content: { parts: [{ text: JSON.stringify({ text: "Gemini result." }) }] } }] }; } };
+  });
+  const clientWith = createContext(async (url, options) => {
+    requestWith = { url, options };
+    return { ok: true, status: 200, async json() { return { candidates: [{ content: { parts: [{ text: JSON.stringify({ text: "Gemini result." }) }] } }] }; } };
+  });
+
+  const profile = {
+    providerKind: REGISTRY_PRESETS.PROVIDER_KINDS.GEMINI,
+    endpoint: "https://generativelanguage.googleapis.com/v1beta",
+    modelId: "test-model",
+    credential: "test-key-gemini"
+  };
+
+  await clientWithout.generate({ profile, userPrompt: "perform this pass" });
+  await clientWith.generate({ profile, userPrompt: "perform this pass", reasoning: true });
+
+  const bodyWithout = JSON.parse(requestWithout.options.body);
+  const bodyWith = JSON.parse(requestWith.options.body);
+  const extraKeys = Object.keys(bodyWith).filter((key) => !(key in bodyWithout));
+  assert.deepEqual(extraKeys, [], "Gemini request body must gain no field from reasoning: true");
+
+  console.log("Dispatcher Gemini reasoning:true adds no request field verified.");
+}
+
+// ---- Scenario 11: Anthropic profile with reasoning: true produces the same request body
+// as without reasoning - the dispatcher never adds a reasoning field to adapterArgs (LD-003). ----
+
+{
+  let requestWithout;
+  let requestWith;
+
+  const clientWithout = createContext(async (url, options) => {
+    requestWithout = { url, options };
+    return { ok: true, status: 200, async json() { return { stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ text: "Anthropic result." }) }] }; } };
+  });
+  const clientWith = createContext(async (url, options) => {
+    requestWith = { url, options };
+    return { ok: true, status: 200, async json() { return { stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ text: "Anthropic result." }) }] }; } };
+  });
+
+  const profile = {
+    providerKind: REGISTRY_PRESETS.PROVIDER_KINDS.ANTHROPIC,
+    endpoint: "https://api.anthropic.com/v1",
+    modelId: "test-model",
+    credential: "test-key-anthropic"
+  };
+
+  await clientWithout.generate({ profile, userPrompt: "perform this pass" });
+  await clientWith.generate({ profile, userPrompt: "perform this pass", reasoning: true });
+
+  const bodyWithout = JSON.parse(requestWithout.options.body);
+  const bodyWith = JSON.parse(requestWith.options.body);
+  const extraKeys = Object.keys(bodyWith).filter((key) => !(key in bodyWithout));
+  assert.deepEqual(extraKeys, [], "Anthropic request body must gain no field from reasoning: true");
+
+  console.log("Dispatcher Anthropic reasoning:true adds no request field verified.");
+}
+
+// ---- Scenario 12: Custom profile, reasoning: true, HTTP 400 on the structured request -
+// the schema-free retry body has no reasoning_effort field (EV-002, LD-031). ----
+
+{
+  const requests = [];
+  let callCount = 0;
+  const client = createContext(async (url, options) => {
+    callCount += 1;
+    requests.push({ url, options });
+    if (callCount === 1) {
+      return { ok: false, status: 400, async json() { return { error: { message: "schema not supported" } }; } };
+    }
+    return { ok: true, status: 200, async json() { return { choices: [{ message: { content: "Custom retry result." } }] }; } };
+  });
+
+  const profile = {
+    providerKind: REGISTRY_PRESETS.PROVIDER_KINDS.CUSTOM,
+    endpoint: "https://lmstudio.example-tailnet.ts.net/v1",
+    modelId: "local-model",
+    credential: ""
+  };
+
+  const result = await client.generate({ profile, userPrompt: "perform this pass", reasoning: true });
+
+  assert.equal(result, "Custom retry result.");
+  assert.equal(requests.length, 2);
+  assert.equal(JSON.parse(requests[0].options.body).reasoning_effort, "medium");
+  assert.ok(!("reasoning_effort" in JSON.parse(requests[1].options.body)), "The schema-free retry body must not carry reasoning_effort");
+
+  console.log("Dispatcher custom/LM Studio schema-free retry omits reasoning_effort verified.");
+}
+
 console.log("AI provider client dispatcher contract boundary verified.");
