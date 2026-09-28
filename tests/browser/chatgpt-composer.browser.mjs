@@ -50,8 +50,9 @@ const chromeStub = `(() => {
 })();`;
 
 // Page instrumentation shared by every fixture: events reaching the composer, send presses,
-// and a focus target outside the composer. The send buttons below are harness additions; the
-// captured artifact does not include ChatGPT's send button.
+// and a focus target outside the composer. The send buttons on the artifact and ProseMirror
+// pages are harness additions; the captured logged-in artifact does not include ChatGPT's send
+// button.
 const instrumentation = `
 <button id="elsewhere" type="button">Focus target outside the composer</button>
 <iframe id="overlay-stand-in" title="Stands in for the Floating Slate iframe" src="https://example.org${FIXTURE_PATH}frame"></iframe>
@@ -100,6 +101,48 @@ ${instrumentation}
 </script></body></html>`;
 }
 
+// The logged-out composer captured from chatgpt.com on 2026-09-28 (Playwright, no login, empty
+// composer): the form and textarea attributes, and the form's three visible buttons in captured
+// order (add files, dictation, Send) as captured, icons reduced to <svg/> by the capture. Every
+// button press is recorded with whether the button was ready. With `becomesReady`, the page
+// applies the captured typed-composer changes a moment after each input event, as ChatGPT does
+// once it registers the text, so Send starts not ready and becomes ready later.
+function loggedOutPage({ becomesReady }) {
+  const ready = `
+  textarea.addEventListener("input", () => setTimeout(() => {
+    const typed = Boolean(textarea.value.trim());
+    form.toggleAttribute("data-has-text", typed);
+    dictation.toggleAttribute("data-idle-home", !typed);
+    send.toggleAttribute("data-visually-disabled", !typed);
+    if (typed) send.removeAttribute("aria-disabled");
+    else send.setAttribute("aria-disabled", "true");
+  }, 50));`;
+  return `<!doctype html><html><body>
+<form action="/unauth-mweb/conversation" autocomplete="off" data-announcement-thinking="Thinking" data-announcement-complete="Response complete" data-announcement-stopped="Response stopped" data-landing="" data-logged-out="" data-mobile-composer="" method="post">
+  <div data-composer-editor-host=""><textarea aria-label="Chat with ChatGPT" autocapitalize="sentences" autocomplete="off" autocorrect="on" data-mobile-composer-prompt="" enterkeyhint="enter" id="mobile-composer-prompt" inputmode="text" name="prompt" placeholder="Ask ChatGPT" required="" rows="1" spellcheck="true"></textarea></div>
+  <button aria-label="Add files and more" data-composer-action="" data-icon-only="" data-icon-position="start" data-icon-shape="non-circular" data-oai-tooltip="" data-oai-tooltip-side="bottom" data-octane-native-image-menu-trigger="" data-radius="full" data-size="medium" data-variant="ghost" data-w-component="button" popovertarget="octane-mobile-composer-actions-popover" popovertargetaction="toggle" type="button" data-octane-bindings="d:1a27fb8a"><span aria-hidden="true"><svg/></span></button>
+  <button aria-label="Start dictation" data-icon-only="" data-icon-position="start" data-icon-shape="non-circular" data-oai-tooltip="" data-oai-tooltip-side="bottom" data-radius="full" data-size="medium" data-start-dictation="" data-variant="ghost" data-w-component="button" data-idle-home="" type="button" data-octane-bindings="d:a5eb6e17"><span aria-hidden="true"><svg/></span><span aria-hidden="true" hidden=""><svg/></span></button>
+  <button aria-disabled="true" aria-label="Send message" data-composer-submit="" data-icon-only="" data-icon-position="start" data-icon-shape="non-circular" data-oai-tooltip="" data-oai-tooltip-side="bottom" data-radius="full" data-send-label="Send message" data-size="medium" data-stop-label="Stop generating" data-variant="primary" data-visually-disabled="" data-w-component="button" type="submit"><span data-composer-send-icon=""><svg/></span><span data-composer-loading-icon="" aria-hidden="true" hidden=""><svg/></span><span data-composer-stop-icon="" hidden=""><svg/></span></button>
+</form>
+<textarea id="search" name="search" aria-label="Search chats"></textarea>
+${instrumentation}
+<script>
+  const form = document.querySelector("form[data-mobile-composer]");
+  const textarea = document.querySelector("#mobile-composer-prompt");
+  const dictation = form.querySelector("[data-start-dictation]");
+  const send = form.querySelector("[data-composer-submit]");
+  window.__recordEvents(textarea);
+  window.__presses = [];
+  for (const button of form.querySelectorAll("button")) {
+    button.addEventListener("click", () => window.__presses.push({
+      label: button.getAttribute("aria-label"),
+      ready: !button.hasAttribute("aria-disabled") && !button.hasAttribute("data-visually-disabled")
+    }));
+  }${becomesReady ? ready : ""}
+  form.addEventListener("submit", (event) => { event.preventDefault(); window.__sendClicks += 1; });
+</script></body></html>`;
+}
+
 const pages = {
   artifact: `<!doctype html><html><body>${artifact}
 <button id="composer-submit-button" disabled type="button" onclick="window.__sendClicks += 1">Send</button>
@@ -123,21 +166,9 @@ ${instrumentation}
     attributes: { "aria-label": "Document editor" },
     sendAttributes: 'id="composer-submit-button"'
   }),
-  // Structure of the logged-out composer observed live on chatgpt.com on 2026-09-28.
-  "logged-out": `<!doctype html><html><body>
-<form data-mobile-composer="" data-logged-out="" action="/unauth-mweb/conversation" method="post">
-  <div data-composer-editor-host=""><textarea id="mobile-composer-prompt" name="prompt" data-mobile-composer-prompt="" placeholder="Ask ChatGPT" rows="1"></textarea></div>
-  <button type="submit" aria-label="Send message" data-composer-submit="" aria-disabled="true">Send</button>
-</form>
-<textarea id="search" name="search" aria-label="Search chats"></textarea>
-${instrumentation}
-<script>
-  const textarea = document.querySelector("#mobile-composer-prompt");
-  const send = document.querySelector("[data-composer-submit]");
-  window.__recordEvents(textarea);
-  textarea.addEventListener("input", () => send.setAttribute("aria-disabled", String(!textarea.value.trim())));
-  document.querySelector("form").addEventListener("submit", (event) => { event.preventDefault(); window.__sendClicks += 1; });
-</script></body></html>`,
+  "logged-out": loggedOutPage({ becomesReady: true }),
+  // The same page ignoring input, so Send never becomes ready.
+  "logged-out-never-ready": loggedOutPage({ becomesReady: false }),
   "never-ready": `<!doctype html><html><body>${artifact}
 <button id="composer-submit-button" disabled type="button" onclick="window.__sendClicks += 1">Send</button>
 ${instrumentation}
@@ -185,6 +216,7 @@ const pageState = (page, selector) => page.evaluate((composerSelector) => {
     text: composer ? ("value" in composer ? composer.value : composer.innerText).trim() : null,
     pmText: window.__pmText ?? null,
     sendClicks: window.__sendClicks,
+    presses: window.__presses ?? null,
     events: window.__events
   };
 }, selector);
@@ -270,11 +302,19 @@ await scenario(browser, {
 });
 
 await scenario(browser, {
-  id: "B5", name: "Logged-out textarea composer, data-composer-submit button", expected: "positive", fixture: "logged-out",
+  id: "B5", name: "Logged-out textarea composer, Send ready after input (captured markup)", expected: "positive", fixture: "logged-out",
   run: async (page) => {
     const result = await runCommand(page, { focus: "#mobile-composer-prompt", action: "insert-submit" });
     const state = await pageState(page, "#mobile-composer-prompt");
-    return { checks: { submitted: result?.mode === "submitted", "text inserted": state.text === TEXT, "pressed once": state.sendClicks === 1 }, detail: summary(result, state) };
+    return {
+      checks: {
+        submitted: result?.mode === "submitted",
+        "text inserted": state.text === TEXT,
+        "only Send pressed, once, when ready": JSON.stringify(state.presses) === JSON.stringify([{ label: "Send message", ready: true }]),
+        "form submitted once": state.sendClicks === 1
+      },
+      detail: `${summary(result, state)}; presses=${JSON.stringify(state.presses)}`
+    };
   }
 });
 
@@ -334,6 +374,22 @@ await scenario(browser, {
     const result = await runCommand(page, { focus: COMPOSER, action: "insert-submit" });
     const state = await pageState(page, COMPOSER);
     return { checks: { "inserted-not-submitted": result?.mode === "inserted-not-submitted", "text kept in composer": state.text === TEXT, "not submitted": state.sendClicks === 0 }, detail: summary(result, state) };
+  }
+});
+
+await scenario(browser, {
+  id: "B11", name: "Logged-out Send button never becomes ready (20 s bound)", expected: "negative", fixture: "logged-out-never-ready",
+  run: async (page) => {
+    const result = await runCommand(page, { focus: "#mobile-composer-prompt", action: "insert-submit" });
+    const state = await pageState(page, "#mobile-composer-prompt");
+    return {
+      checks: {
+        "inserted-not-submitted": result?.mode === "inserted-not-submitted",
+        "text kept in composer": state.text === TEXT,
+        "no button pressed": state.presses?.length === 0 && state.sendClicks === 0
+      },
+      detail: `${summary(result, state)}; presses=${JSON.stringify(state.presses)}`
+    };
   }
 });
 

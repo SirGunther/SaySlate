@@ -9,6 +9,7 @@ import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { FakeElement, FakeInput, FakeTextArea, element, rootElement } from "./support/elementModel.mjs";
+import { loggedOutComposer, pressCounts, showTypedState } from "./support/chatGPTLoggedOutComposer.mjs";
 
 const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sources = ["chatGPTAdapter.js", "shortcutProtocol.js", "floatingHost.js"]
@@ -182,18 +183,26 @@ const inputEvents = (node) => node.events.filter((event) => event.type === "inpu
   assert.equal(inputEvents(editor).length, 1, "the insertion must reach the editor as one input event");
 }
 
-// Positive: the logged-out textarea composer (form with a data-composer-submit button).
+// Positive: the captured logged-out textarea composer. Send starts not ready, and, like the real
+// page, the fixture readies it shortly after the textarea's input event, so the submission
+// must wait for it. The add-files and dictation buttons before Send are never pressed.
 {
   const page = createPage();
-  const textarea = element("textarea", { id: "mobile-composer-prompt", name: "prompt", "data-mobile-composer-prompt": "" });
-  const send = element("button", { type: "submit", "aria-label": "Send message", "data-composer-submit": "" });
-  page.body.append(element("form", { "data-mobile-composer": "" }, [element("div", {}, [textarea]), send]));
+  const composer = loggedOutComposer();
+  const { textarea } = composer;
+  page.body.append(composer.form);
+  let pressesBeforeReady = null;
+  textarea.addEventListener("input", () => setTimeout(() => {
+    pressesBeforeReady = pressCounts(composer);
+    if (textarea.value.trim()) showTypedState(composer);
+  }, 5));
   await page.openOn(textarea);
   const result = await page.command("insert-submit");
   assert.equal(result.ok, true, result.message);
   assert.equal(result.mode, "submitted");
   assert.equal(textarea.value, TEXT);
-  assert.equal(send.clicks, 1);
+  assert.deepEqual(pressesBeforeReady, [0, 0, 0], "no button may be pressed before the send button is ready");
+  assert.deepEqual(pressCounts(composer), [0, 0, 1], "only the send button may be pressed, once");
   const [event] = inputEvents(textarea);
   assert.equal(event?.bubbles, true);
   assert.equal(event?.inputType, "insertText");
