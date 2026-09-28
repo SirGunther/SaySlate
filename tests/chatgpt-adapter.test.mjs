@@ -4,6 +4,7 @@ import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { element, rootElement } from "./support/elementModel.mjs";
+import { loggedOutComposer, pressCounts, showTypedState } from "./support/chatGPTLoggedOutComposer.mjs";
 
 const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = fs.readFileSync(path.join(extensionRoot, "chatGPTAdapter.js"), "utf8");
@@ -33,11 +34,9 @@ assert.equal(adapter.isChatGPTComposer(currentEditor), true, "the id-less ProseM
 const legacyEditor = element("div", { id: "prompt-textarea", contenteditable: "true", class: "ProseMirror" });
 assert.equal(adapter.isChatGPTComposer(legacyEditor), true, "the #prompt-textarea composer must stay accepted");
 
-// The logged-out composer observed live on chatgpt.com on 2026-09-28: a textarea whose form
-// holds a data-composer-submit send button and no #composer-submit-button.
-const loggedOutTextarea = element("textarea", { id: "mobile-composer-prompt", name: "prompt", "data-mobile-composer-prompt": "" });
-const loggedOutSend = element("button", { type: "submit", "aria-label": "Send message", "data-composer-submit": "", "aria-disabled": "true" });
-element("form", { "data-mobile-composer": "" }, [element("div", {}, [loggedOutTextarea]), loggedOutSend]);
+// The logged-out composer captured from chatgpt.com on 2026-09-28: a textarea whose form holds
+// add-files, dictation, and data-composer-submit send buttons and no #composer-submit-button.
+const { textarea: loggedOutTextarea } = loggedOutComposer();
 assert.equal(adapter.isChatGPTComposer(loggedOutTextarea), true, "the logged-out textarea composer must be accepted");
 
 // A textarea composer whose form holds the #composer-submit-button send button.
@@ -89,25 +88,33 @@ const attributeResult = await submit({ documentRef: documentWith(attributeButton
 assert.equal(attributeResult.ok, true);
 assert.equal(attributeButton.clicks, 1, "the data-composer-submit send button must be pressed once");
 
-// ChatGPT enables its send button only after it registers the inserted text.
-const lateButton = element("button", { "data-composer-submit": "", "aria-disabled": "true" });
-setTimeout(() => lateButton.setAttribute("aria-disabled", "false"), 5);
-const lateResult = await adapter.waitForComposerAndSubmit({
-  composer,
-  expectedText: "A finished SaySlate message",
-  documentRef: documentWith(lateButton),
-  timeoutMs: 500,
-  pollMs: 1
-});
+// The captured logged-out composer, attached to a document, with the text already inserted.
+// Its add-files and dictation buttons sit before Send in the form.
+function loggedOutDocument() {
+  const parts = loggedOutComposer();
+  parts.textarea.value = "A finished SaySlate message";
+  return { ...parts, documentRef: rootElement(null, [element("body", {}, [parts.form])]) };
+}
+
+// ChatGPT readies its send button only after it registers the inserted text. As captured, the
+// page then removes aria-disabled and data-visually-disabled from Send.
+const late = loggedOutDocument();
+let pressesBeforeReady = null;
+setTimeout(() => {
+  pressesBeforeReady = pressCounts(late);
+  showTypedState(late);
+}, 5);
+const lateResult = await submit({ composer: late.textarea, documentRef: late.documentRef, timeoutMs: 500 });
 assert.equal(lateResult.ok, true);
-assert.equal(lateButton.clicks, 1, "a send button enabled after insertion must be pressed once");
+assert.deepEqual(pressesBeforeReady, [0, 0, 0], "no button may be pressed before the send button is ready");
+assert.deepEqual(pressCounts(late), [0, 0, 1], "only the send button may be pressed, once, after it becomes ready");
 
 // Conditions under which nothing may be pressed.
-const ariaDisabled = element("button", { "data-composer-submit": "", "aria-disabled": "true" });
-const ariaDisabledResult = await submit({ documentRef: documentWith(ariaDisabled) });
-assert.equal(ariaDisabledResult.ok, false);
-assert.match(ariaDisabledResult.message, /did not become ready/);
-assert.equal(ariaDisabled.clicks, 0, "an aria-disabled send button must not be pressed");
+const notReady = loggedOutDocument();
+const notReadyResult = await submit({ composer: notReady.textarea, documentRef: notReady.documentRef });
+assert.equal(notReadyResult.ok, false);
+assert.match(notReadyResult.message, /did not become ready/);
+assert.deepEqual(pressCounts(notReady), [0, 0, 0], "no button may be pressed while the send button is aria-disabled and visually disabled");
 
 const disabled = element("button", { id: "composer-submit-button", disabled: "" });
 const disabledResult = await submit({ documentRef: documentWith(disabled) });
