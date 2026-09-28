@@ -280,6 +280,19 @@ if (!chatGPTAdapter.includes("#composer-submit-button") || !chatGPTAdapter.inclu
 if (!floatingHost.includes("commitAndSubmitToChatGPT") || !floatingHost.includes('message.action === "insert-submit"') || !floatingHost.includes('key === "s" && !chatGPT')) {
   throw new Error("The host does not safely restrict ChatGPT submission to its supported surface.");
 }
+// ChatGPT page markup is known only to chatGPTAdapter.js, so a markup change is edited there;
+// the host calls the adapter's exported lookups.
+for (const lookup of ["findSendButton", "findComposer"]) {
+  if (!new RegExp(`Object\\.freeze\\(\\{[^}]*\\b${lookup}\\b`).test(chatGPTAdapter)) {
+    throw new Error(`The ChatGPT adapter must export ${lookup}.`);
+  }
+}
+if (!floatingHost.includes("chatGPT.findComposer(document)")) {
+  throw new Error("The host must find the ChatGPT composer through the adapter.");
+}
+for (const markup of ["composer-submit", "data-composer", "prompt-textarea", "mobile-composer", "type='submit'", 'type="submit"']) {
+  if (floatingHost.includes(markup)) throw new Error(`floatingHost.js must leave ChatGPT markup to chatGPTAdapter.js: ${markup}`);
+}
 if (!floatingScript.includes('submitToChatGPT ? "insert-submit" : "insert"') || !floatingScript.includes("finishWorkflow(true)")) {
   throw new Error("The ChatGPT action does not reuse the guarded finish workflow.");
 }

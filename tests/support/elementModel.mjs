@@ -1,7 +1,9 @@
 // A small element model for tests that load SaySlate content scripts in node:vm. It implements
-// matches/closest/querySelector for the selector forms those scripts use (tag names, ids,
-// [attr] and [attr='value'], comma lists). Any other selector form throws, so a changed
-// selector fails its test instead of silently matching nothing.
+// matches/closest/querySelector/querySelectorAll for the selector forms those scripts use (tag
+// names, ids, [attr] and [attr='value'], comma lists). Any other selector form throws, so a
+// changed selector fails its test instead of silently matching nothing. getClientRects follows
+// Chrome: no boxes for an element outside a document or inside a `hidden` element (the hidden
+// attribute is display:none in the user-agent stylesheet), otherwise one box.
 
 function matchesCompound(node, selector) {
   const parts = selector.match(/^([a-z]+)?(#[\w-]+)?((?:\[[^\]]+\])*)$/i);
@@ -73,6 +75,15 @@ export class FakeElement {
     }
     return null;
   }
+  // Every matching descendant once, in document order.
+  querySelectorAll(selectorList) {
+    const found = [];
+    for (const child of this.children) {
+      if (child.matches(selectorList)) found.push(child);
+      found.push(...child.querySelectorAll(selectorList));
+    }
+    return found;
+  }
   contains(node) {
     for (let current = node; current; current = current.parentElement) {
       if (current === this) return true;
@@ -84,6 +95,13 @@ export class FakeElement {
       node.parentElement?.children.splice(node.parentElement.children.indexOf(node), 1);
       node.parentElement = this;
       this.children.push(node);
+    }
+  }
+  prepend(...nodes) {
+    for (const node of [...nodes].reverse()) {
+      node.parentElement?.children.splice(node.parentElement.children.indexOf(node), 1);
+      node.parentElement = this;
+      this.children.unshift(node);
     }
   }
   remove() {
@@ -106,6 +124,13 @@ export class FakeElement {
   }
   click() { this.clicks += 1; }
   getBoundingClientRect() { return { left: 10, top: 10, right: 110, bottom: 30, width: 100, height: 20 }; }
+  getClientRects() {
+    if (!this.isConnected) return [];
+    for (let node = this; node; node = node.parentElement) {
+      if (node.getAttribute("hidden") !== null) return [];
+    }
+    return [this.getBoundingClientRect()];
+  }
   attachShadow() { return { append() {} }; }
 }
 

@@ -261,10 +261,20 @@
     if (!chatGPT?.isChatGPTLocation(location)) {
       return { ok: false, mode: "unsupported", message: "Process and submit is available only on ChatGPT." };
     }
-    const composer = capturedTarget?.element;
-    if (!chatGPT.isChatGPTComposer(composer)) {
-      return { ok: false, mode: "wrong-target", message: "Place the cursor in the ChatGPT message composer before opening SaySlate." };
+    const saved = capturedTarget?.element;
+    if (!chatGPT.isChatGPTComposer(saved)) {
+      // Floating Slate opened without the cursor in the composer, so use the page's one visible
+      // composer. A saved field the page has since removed is not swapped for another
+      // composer, so a replaced composer is never submitted. It is captured without focusing
+      // it first, so the text goes after any draft already there.
+      const located = saved?.isConnected === false ? null : chatGPT.findComposer(document);
+      const target = located ? captureEditable(located) : null;
+      if (!target) {
+        return { ok: false, mode: "wrong-target", message: "Place the cursor in the ChatGPT message composer before opening SaySlate." };
+      }
+      capturedTarget = target;
     }
+    const composer = capturedTarget.element;
 
     const insertion = await commitText(text);
     if (!insertion.ok || insertion.mode !== "inserted") {
