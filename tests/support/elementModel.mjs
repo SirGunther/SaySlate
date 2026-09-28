@@ -97,6 +97,13 @@ export class FakeElement {
       this.children.push(node);
     }
   }
+  prepend(...nodes) {
+    for (const node of [...nodes].reverse()) {
+      node.parentElement?.children.splice(node.parentElement.children.indexOf(node), 1);
+      node.parentElement = this;
+      this.children.unshift(node);
+    }
+  }
   remove() {
     if (!this.parentElement) return;
     this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1);

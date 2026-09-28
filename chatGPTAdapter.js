@@ -8,10 +8,10 @@
   const TEXTAREA_COMPOSER_SELECTOR = "textarea";
   // Send markers: the `#composer-submit-button` id, and `data-composer-submit` on the logged-out textarea composer's Send.
   const SEND_BUTTON_SELECTOR = "#composer-submit-button, button[data-composer-submit]";
-  // Plain submit button: the logged-in Send (captured 2026-09-28) has no marker; trusted only inside the composer's ancestors.
+  // Plain submit button: the logged-in Send (captured 2026-09-28) has no marker; trusted only inside the composer's own form.
   const SUBMIT_BUTTON_SELECTOR = "button[type='submit']";
-  // The send button search walks up from the composer and stops before these page roots.
-  const PAGE_ROOT_SELECTOR = "body, html";
+  // The composer's own form: holds the textarea composer's send marker, and bounds the plain submit button search.
+  const FORM_SELECTOR = "form";
   const COMPOSER_CANDIDATE_SELECTOR = `${COMPOSER_EDITOR_SELECTOR}, ${TEXTAREA_COMPOSER_SELECTOR}`;
   const DEFAULT_TIMEOUT_MS = 20000;
   const DEFAULT_POLL_MS = 150;
@@ -25,7 +25,7 @@
     if (!element?.matches) return false;
     if (element.matches(COMPOSER_EDITOR_SELECTOR)) return true;
     if (!element.matches(TEXTAREA_COMPOSER_SELECTOR)) return false;
-    return Boolean(element.closest?.("form")?.querySelector?.(SEND_BUTTON_SELECTOR));
+    return Boolean(element.closest?.(FORM_SELECTOR)?.querySelector?.(SEND_BUTTON_SELECTOR));
   }
 
   function normalizedText(value) {
@@ -40,15 +40,13 @@
     return Boolean(currentText && expected && currentText.includes(expected));
   }
 
-  // The composer's own send button, ready or not: the nearest ancestor of the composer that
-  // contains a send button decides, preferring a marked send button over a plain submit button
-  // inside it. Without one, only a marked send button anywhere in the document qualifies.
+  // The composer's send button, ready or not: in the composer's own form, a marked send button,
+  // else its first plain submit button; otherwise a marked send button anywhere in the document.
   function findSendButton(composer, documentRef = globalThis.document) {
-    for (let node = composer?.parentElement; node && !node.matches(PAGE_ROOT_SELECTOR); node = node.parentElement) {
-      const button = node.querySelector(SEND_BUTTON_SELECTOR) || node.querySelector(SUBMIT_BUTTON_SELECTOR);
-      if (button) return button;
-    }
-    return documentRef?.querySelector?.(SEND_BUTTON_SELECTOR) || null;
+    // A type=submit button only submits its own form, so a plain one counts only in the composer's form.
+    const form = composer?.closest?.(FORM_SELECTOR);
+    const own = form ? form.querySelector(SEND_BUTTON_SELECTOR) || form.querySelector(SUBMIT_BUTTON_SELECTOR) : null;
+    return own || documentRef?.querySelector?.(SEND_BUTTON_SELECTOR) || null;
   }
 
   function readySendButton(composer, documentRef) {

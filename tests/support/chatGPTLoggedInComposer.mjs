@@ -4,7 +4,8 @@
 // temporary and regular chats). The send button has no id, no data-composer-submit, and no
 // data-testid. Where it sits relative to the composer was not captured, so both arrangements
 // are built: "form" puts the composer and the button in one <form>, "wrapper" puts them in a
-// shared <div> with no form.
+// shared <div> with no form. A type=submit button submits only its own form, so SaySlate
+// presses the button in the "form" arrangement and never in the "wrapper" arrangement.
 import { element } from "./elementModel.mjs";
 
 export const EDITOR_ATTRIBUTES = {
@@ -48,8 +49,24 @@ export function loggedInComposer({ arrangement }) {
   return { container, editor, paragraph, send };
 }
 
-// A submit button that does not belong to the composer, such as a dialog's Dismiss.
-export function dismissDialog() {
-  const button = element("button", { type: "submit", "aria-label": "Dismiss" });
-  return { container: element("div", { role: "dialog" }, [button]), button };
+// App containers around the composer, as on chatgpt.com: `content` sits at div#app > main > div,
+// with `siblings` ahead of main inside div#app. The caller appends `app` to body.
+export function appShell(content, siblings = []) {
+  const slot = element("div", {}, [content]);
+  return { app: element("div", { id: "app" }, [...siblings, element("main", {}, [slot])]), slot };
 }
+
+// Enabled submit buttons that do not belong to the composer, in subtrees beside it: a
+// navigation form's submit and a dialog's Dismiss.
+export function unrelatedSubmits() {
+  const navSubmit = element("button", { type: "submit", "aria-label": "Search" });
+  const dismiss = element("button", { type: "submit", "aria-label": "Dismiss" });
+  return {
+    nav: element("nav", {}, [element("form", { role: "search" }, [navSubmit])]),
+    dialog: element("div", { role: "dialog" }, [dismiss]),
+    navSubmit,
+    dismiss
+  };
+}
+
+export const unrelatedPresses = ({ navSubmit, dismiss }) => [navSubmit.clicks, dismiss.clicks];

@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { element, rootElement } from "./support/elementModel.mjs";
 import { loggedOutComposer, pressCounts, showTypedState } from "./support/chatGPTLoggedOutComposer.mjs";
-import { dismissDialog, loggedInComposer } from "./support/chatGPTLoggedInComposer.mjs";
+import { SEND_ATTRIBUTES, appShell, loggedInComposer, unrelatedPresses, unrelatedSubmits } from "./support/chatGPTLoggedInComposer.mjs";
 
 const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = fs.readFileSync(path.join(extensionRoot, "chatGPTAdapter.js"), "utf8");
@@ -89,51 +89,80 @@ const attributeResult = await submit({ documentRef: documentWith(attributeButton
 assert.equal(attributeResult.ok, true);
 assert.equal(attributeButton.clicks, 1, "the data-composer-submit send button must be pressed once");
 
-// The captured logged-in composer and send button, attached to a document with the text
-// already inserted. `before` holds page elements placed ahead of the composer in the document.
-function loggedInDocument({ arrangement, before = [] }) {
+// A document whose body holds `content` inside the app containers (body > div#app > main > div),
+// with `siblings` beside main.
+function appDocument(content, siblings = []) {
+  return rootElement(null, [element("body", {}, [appShell(content, siblings).app])]);
+}
+
+// The captured logged-in composer and send button inside the app containers, with the text
+// already inserted.
+function loggedInDocument({ arrangement, siblings = [] }) {
   const parts = loggedInComposer({ arrangement });
   parts.editor.textContent = "A finished SaySlate message";
-  return { ...parts, documentRef: rootElement(null, [element("body", {}, [...before, parts.container])]) };
+  return { ...parts, documentRef: appDocument(parts.container, siblings) };
 }
 
-// The logged-in send button has neither send marker. It must be pressed once whether it shares
-// a form with the composer or only a wrapper with no form.
-for (const arrangement of ["form", "wrapper"]) {
-  const page = loggedInDocument({ arrangement });
-  const result = await submit({ composer: page.editor, documentRef: page.documentRef });
-  assert.equal(result.ok, true, `logged-in send button (${arrangement}): ${result.message}`);
-  assert.equal(page.send.clicks, 1, `the logged-in send button must be pressed once (${arrangement})`);
-}
-
-// A submit button outside the composer's ancestors, placed first in the document, is never
-// pressed: not when the composer has its own send button, and not when it is the only submit
-// button on the page.
+// Negative (the reviewers' layout): the composer has no send button of its own, and enabled
+// submit buttons sit in subtrees beside it (a navigation form, a dialog's Dismiss). A
+// type=submit button submits only its own form, so none of them may be pressed.
 {
-  const dialog = dismissDialog();
-  const page = loggedInDocument({ arrangement: "wrapper", before: [dialog.container] });
-  const result = await submit({ composer: page.editor, documentRef: page.documentRef });
-  assert.equal(result.ok, true, result.message);
-  assert.equal(page.send.clicks, 1, "the composer's own send button must be pressed once");
-  assert.equal(dialog.button.clicks, 0, "a submit button outside the composer must not be pressed");
-}
-{
-  const dialog = dismissDialog();
+  const unrelated = unrelatedSubmits();
   const editor = element("div", { contenteditable: "true", "data-composer-markdown": "" }, [], "A finished SaySlate message");
-  const documentRef = rootElement(null, [element("body", {}, [dialog.container, element("div", {}, [element("div", {}, [editor])])])]);
+  const documentRef = appDocument(element("div", { "data-composer-layout": "single-line" }, [editor]), [unrelated.nav, unrelated.dialog]);
   const result = await submit({ composer: editor, documentRef });
+  assert.equal(result.ok, false, `a submit button outside the composer's form was pressed: ${result.message}`);
+  assert.match(result.message, /did not become ready/);
+  assert.deepEqual(unrelatedPresses(unrelated), [0, 0], "no submit button outside the composer's form may be pressed");
+}
+
+// The logged-in send button has neither send marker. In the composer's form it is pressed once,
+// and the unrelated submit buttons beside the app's main area are not.
+{
+  const unrelated = unrelatedSubmits();
+  const page = loggedInDocument({ arrangement: "form", siblings: [unrelated.nav, unrelated.dialog] });
+  const result = await submit({ composer: page.editor, documentRef: page.documentRef });
+  assert.equal(result.ok, true, `logged-in send button (form): ${result.message}`);
+  assert.equal(page.send.clicks, 1, "the logged-in send button in the composer's form must be pressed once");
+  assert.deepEqual(unrelatedPresses(unrelated), [0, 0]);
+}
+
+// Negative: the logged-in send button sharing only a wrapper (no form) with the composer is
+// outside the composer's form, so it is not pressed, nor is anything else.
+{
+  const unrelated = unrelatedSubmits();
+  const page = loggedInDocument({ arrangement: "wrapper", siblings: [unrelated.nav, unrelated.dialog] });
+  const result = await submit({ composer: page.editor, documentRef: page.documentRef });
   assert.equal(result.ok, false);
   assert.match(result.message, /did not become ready/);
-  assert.equal(dialog.button.clicks, 0, "the only submit button on the page must not be pressed when it is outside the composer");
+  assert.equal(page.send.clicks, 0, "a submit button outside the composer's form must not be pressed");
+  assert.deepEqual(unrelatedPresses(unrelated), [0, 0]);
 }
 
-// Within the nearest ancestor holding buttons, a marked send button is preferred over a plain
-// submit button that comes first.
+// ChatGPT re-renders Send while SaySlate waits: the not-ready button is replaced by a new element
+// with the same attributes. The new one is pressed once and the replaced one never.
+{
+  const page = loggedInDocument({ arrangement: "form" });
+  const stale = page.send;
+  stale.setAttribute("disabled", "");
+  const fresh = element("button", { ...SEND_ATTRIBUTES });
+  setTimeout(() => {
+    const slot = stale.parentElement;
+    stale.remove();
+    slot.append(fresh);
+  }, 5);
+  const result = await submit({ composer: page.editor, documentRef: page.documentRef, timeoutMs: 500 });
+  assert.equal(result.ok, true, `re-rendered send button: ${result.message}`);
+  assert.deepEqual([stale.clicks, fresh.clicks], [0, 1], "only the re-rendered send button may be pressed, once");
+}
+
+// In the composer's form, a marked send button is preferred over a plain submit button that
+// comes first.
 {
   const editor = element("div", { contenteditable: "true", "data-composer-markdown": "" }, [], "A finished SaySlate message");
   const plain = element("button", { type: "submit", "aria-label": "Other" });
   const marked = element("button", { "data-composer-submit": "", type: "submit" });
-  const documentRef = rootElement(null, [element("body", {}, [element("form", {}, [element("div", {}, [editor]), plain, marked])])]);
+  const documentRef = appDocument(element("form", {}, [element("div", {}, [editor]), plain, marked]));
   const result = await submit({ composer: editor, documentRef });
   assert.equal(result.ok, true, result.message);
   assert.deepEqual([plain.clicks, marked.clicks], [0, 1], "the marked send button must be pressed, not the plain submit button");
@@ -142,35 +171,33 @@ for (const arrangement of ["form", "wrapper"]) {
 // The composer's own button wins over a marked send button elsewhere in the document.
 {
   const elsewhere = element("button", { id: "composer-submit-button" });
-  const page = loggedInDocument({ arrangement: "form", before: [element("div", {}, [elsewhere])] });
+  const page = loggedInDocument({ arrangement: "form", siblings: [element("div", {}, [elsewhere])] });
   const result = await submit({ composer: page.editor, documentRef: page.documentRef });
   assert.equal(result.ok, true, result.message);
   assert.deepEqual([page.send.clicks, elsewhere.clicks], [1, 0], "only the composer's own send button may be pressed");
 }
 
-// Conditions under which the logged-in send button must not be pressed.
+// Conditions under which the logged-in send button in the composer's form must not be pressed.
 for (const [condition, prepare, expectedMessage] of [
   ["disabled", (page) => page.send.setAttribute("disabled", ""), /did not become ready/],
   ["aria-disabled", (page) => page.send.setAttribute("aria-disabled", "true"), /did not become ready/],
   ["text missing", (page) => { page.editor.textContent = ""; }, /did not become ready/],
   ["composer replaced", (page) => page.editor.remove(), /replaced before submission/]
 ]) {
-  for (const arrangement of ["form", "wrapper"]) {
-    const page = loggedInDocument({ arrangement });
-    prepare(page);
-    const result = await submit({ composer: page.editor, documentRef: page.documentRef });
-    assert.equal(result.ok, false, `${condition} (${arrangement})`);
-    assert.match(result.message, expectedMessage, `${condition} (${arrangement})`);
-    assert.equal(page.send.clicks, 0, `the logged-in send button must not be pressed when ${condition} (${arrangement})`);
-  }
+  const page = loggedInDocument({ arrangement: "form" });
+  prepare(page);
+  const result = await submit({ composer: page.editor, documentRef: page.documentRef });
+  assert.equal(result.ok, false, condition);
+  assert.match(result.message, expectedMessage, condition);
+  assert.equal(page.send.clicks, 0, `the logged-in send button must not be pressed when ${condition}`);
 }
 
-// The captured logged-out composer, attached to a document, with the text already inserted.
+// The captured logged-out composer inside the app containers, with the text already inserted.
 // Its add-files and dictation buttons sit before Send in the form.
 function loggedOutDocument() {
   const parts = loggedOutComposer();
   parts.textarea.value = "A finished SaySlate message";
-  return { ...parts, documentRef: rootElement(null, [element("body", {}, [parts.form])]) };
+  return { ...parts, documentRef: appDocument(parts.form) };
 }
 
 // ChatGPT readies its send button only after it registers the inserted text. As captured, the
@@ -220,37 +247,41 @@ const timedOut = await submit({ documentRef: { querySelector() { return null; } 
 assert.equal(timedOut.ok, false);
 assert.match(timedOut.message, /did not become ready/);
 
-// findSendButton: the composer's own send button, ready or not, or null.
-const pageWith = (...children) => rootElement(null, [element("body", {}, children)]);
-for (const arrangement of ["form", "wrapper"]) {
-  const { container, editor, send } = loggedInComposer({ arrangement });
-  const documentRef = pageWith(dismissDialog().container, container);
-  assert.equal(adapter.findSendButton(editor, documentRef), send, `the logged-in send button must be found (${arrangement})`);
+// findSendButton: the composer's send button, ready or not, or null.
+// `pageWith` places its children in the app containers (body > div#app > main).
+const pageWith = (...children) => rootElement(null, [element("body", {}, [element("div", { id: "app" }, [element("main", {}, children)])])]);
+{
+  const unrelated = unrelatedSubmits();
+  const { container, editor, send } = loggedInComposer({ arrangement: "form" });
+  const documentRef = pageWith(unrelated.nav, unrelated.dialog, container);
+  assert.equal(adapter.findSendButton(editor, documentRef), send, "the logged-in send button in the composer's form must be found");
   send.setAttribute("disabled", "");
-  assert.equal(adapter.findSendButton(editor, documentRef), send, `a disabled send button is still the composer's own (${arrangement})`);
+  assert.equal(adapter.findSendButton(editor, documentRef), send, "a disabled send button is still the composer's own");
 }
 {
-  const dialog = dismissDialog();
-  const editor = element("div", { contenteditable: "true", "data-composer-markdown": "" });
-  const documentRef = pageWith(dialog.container, element("div", {}, [editor]));
-  assert.equal(adapter.findSendButton(editor, documentRef), null, "a submit button outside the composer's ancestors must not be found");
+  const unrelated = unrelatedSubmits();
+  const { container, editor } = loggedInComposer({ arrangement: "wrapper" });
+  assert.equal(adapter.findSendButton(editor, pageWith(unrelated.nav, unrelated.dialog, container)), null, "a plain submit button outside the composer's form must not be found");
 }
 {
-  // The walk stops before body, so a plain submit button that only shares body is not found.
+  const unrelated = unrelatedSubmits();
   const editor = element("div", { contenteditable: "true", "data-composer-markdown": "" });
-  const bodySibling = element("button", { type: "submit", "aria-label": "Send" });
-  assert.equal(adapter.findSendButton(editor, pageWith(editor, bodySibling)), null, "a plain submit button reachable only through body must not be found");
+  const documentRef = pageWith(unrelated.nav, unrelated.dialog, element("div", {}, [editor]));
+  assert.equal(adapter.findSendButton(editor, documentRef), null, "submit buttons in other subtrees, one in another form, must not be found");
 }
 {
   const editor = element("div", { contenteditable: "true", "data-composer-markdown": "" });
   const plain = element("button", { type: "submit" });
   const marked = element("button", { "data-composer-submit": "", type: "submit" });
-  assert.equal(adapter.findSendButton(editor, pageWith(element("form", {}, [element("div", {}, [editor]), plain, marked]))), marked, "a marked send button is preferred within the same ancestor");
+  assert.equal(adapter.findSendButton(editor, pageWith(element("form", {}, [element("div", {}, [editor]), plain, marked]))), marked, "a marked send button is preferred within the composer's form");
 }
 {
   const elsewhere = element("button", { id: "composer-submit-button" });
-  const { container, editor, send } = loggedInComposer({ arrangement: "wrapper" });
-  assert.equal(adapter.findSendButton(editor, pageWith(elsewhere, container)), send, "the nearest ancestor's button wins over a marked button elsewhere");
+  const { container, editor, send } = loggedInComposer({ arrangement: "form" });
+  assert.equal(adapter.findSendButton(editor, pageWith(elsewhere, container)), send, "the composer's form's button wins over a marked button elsewhere");
+  const wrapped = loggedInComposer({ arrangement: "wrapper" });
+  const marked = element("button", { id: "composer-submit-button" });
+  assert.equal(adapter.findSendButton(wrapped.editor, pageWith(marked, wrapped.container)), marked, "outside a form, only a marked send button qualifies");
 }
 {
   // The captured logged-in composer markup with a marked send button outside it (browser B1).
