@@ -1,12 +1,18 @@
 (() => {
   "use strict";
 
-  // ChatGPT serves more than one composer. The editor selector matches the ProseMirror
-  // composer with its older `#prompt-textarea` id and without it (`data-composer-markdown`).
-  // The send selector matches the `#composer-submit-button` id and the `data-composer-submit`
-  // attribute used by the textarea composer (`#mobile-composer-prompt`).
+  // Every piece of ChatGPT page markup SaySlate relies on is declared here, once per role.
+  // ProseMirror composer: the older `#prompt-textarea` id, and the current id-less editor marked `data-composer-markdown`.
   const COMPOSER_EDITOR_SELECTOR = "#prompt-textarea, [contenteditable='true'][data-composer-markdown]";
+  // Textarea composer (logged-out `#mobile-composer-prompt`): a composer only when its form holds a send marker.
+  const TEXTAREA_COMPOSER_SELECTOR = "textarea";
+  // Send markers: the `#composer-submit-button` id, and `data-composer-submit` on the logged-out textarea composer's Send.
   const SEND_BUTTON_SELECTOR = "#composer-submit-button, button[data-composer-submit]";
+  // Plain submit button: the logged-in Send (captured 2026-09-28) has no marker; trusted only inside the composer's ancestors.
+  const SUBMIT_BUTTON_SELECTOR = "button[type='submit']";
+  // The send button search walks up from the composer and stops before these page roots.
+  const PAGE_ROOT_SELECTOR = "body, html";
+  const COMPOSER_CANDIDATE_SELECTOR = `${COMPOSER_EDITOR_SELECTOR}, ${TEXTAREA_COMPOSER_SELECTOR}`;
   const DEFAULT_TIMEOUT_MS = 20000;
   const DEFAULT_POLL_MS = 150;
 
@@ -18,7 +24,7 @@
   function isChatGPTComposer(element) {
     if (!element?.matches) return false;
     if (element.matches(COMPOSER_EDITOR_SELECTOR)) return true;
-    if (!element.matches("textarea")) return false;
+    if (!element.matches(TEXTAREA_COMPOSER_SELECTOR)) return false;
     return Boolean(element.closest?.("form")?.querySelector?.(SEND_BUTTON_SELECTOR));
   }
 
@@ -34,10 +40,29 @@
     return Boolean(currentText && expected && currentText.includes(expected));
   }
 
-  function readySendButton(documentRef) {
-    const button = documentRef?.querySelector?.(SEND_BUTTON_SELECTOR);
+  // The composer's own send button, ready or not: the nearest ancestor of the composer that
+  // contains a send button decides, preferring a marked send button over a plain submit button
+  // inside it. Without one, only a marked send button anywhere in the document qualifies.
+  function findSendButton(composer, documentRef = globalThis.document) {
+    for (let node = composer?.parentElement; node && !node.matches(PAGE_ROOT_SELECTOR); node = node.parentElement) {
+      const button = node.querySelector(SEND_BUTTON_SELECTOR) || node.querySelector(SUBMIT_BUTTON_SELECTOR);
+      if (button) return button;
+    }
+    return documentRef?.querySelector?.(SEND_BUTTON_SELECTOR) || null;
+  }
+
+  function readySendButton(composer, documentRef) {
+    const button = findSendButton(composer, documentRef);
     if (!button || button.disabled || button.getAttribute?.("aria-disabled") === "true") return null;
     return button;
+  }
+
+  // The page's one visible ChatGPT composer, or null when there is none or more than one, so a
+  // submission never guesses between composers.
+  function findComposer(documentRef = globalThis.document) {
+    const composers = Array.from(documentRef?.querySelectorAll?.(COMPOSER_CANDIDATE_SELECTOR) || [])
+      .filter((candidate) => isChatGPTComposer(candidate) && candidate.getClientRects().length > 0);
+    return composers.length === 1 ? composers[0] : null;
   }
 
   function waitForComposerAndSubmit({
@@ -56,7 +81,7 @@
           return;
         }
 
-        const sendButton = readySendButton(documentRef);
+        const sendButton = readySendButton(composer, documentRef);
         if (sendButton && composerContains(composer, expectedText)) {
           try {
             sendButton.click();
@@ -82,6 +107,8 @@
     SEND_BUTTON_SELECTOR,
     isChatGPTLocation,
     isChatGPTComposer,
+    findComposer,
+    findSendButton,
     composerContains,
     waitForComposerAndSubmit
   });

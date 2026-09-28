@@ -27,6 +27,10 @@ const { chromium } = await import(playwrightPath ? pathToFileURL(playwrightPath)
 const TEXT = "Hello from SaySlate, dictated and cleaned up.";
 const FIXTURE_PATH = "/__sayslate-fixture__/";
 const artifact = fs.readFileSync(path.join(extensionRoot, "tests", "fixtures", "chatgpt-composer-2026-09-28.html"), "utf8");
+// The logged-in send button, copied verbatim from the logged-in chatgpt.com on 2026-09-28
+// (identical in temporary and regular chats): `button type="submit" aria-label="Send"` with no
+// id, no data-composer-submit, and no data-testid.
+const sendButtonArtifact = fs.readFileSync(path.join(extensionRoot, "tests", "fixtures", "chatgpt-send-button-2026-09-28.html"), "utf8");
 const scripts = ["chatGPTAdapter.js", "shortcutProtocol.js", "floatingHost.js"]
   .map((file) => fs.readFileSync(path.join(sourceRoot, file), "utf8"));
 
@@ -51,8 +55,7 @@ const chromeStub = `(() => {
 
 // Page instrumentation shared by every fixture: events reaching the composer, send presses,
 // and a focus target outside the composer. The send buttons on the artifact and ProseMirror
-// pages are harness additions; the captured logged-in artifact does not include ChatGPT's send
-// button.
+// pages are harness additions; the logged-in pages use the captured logged-in send button.
 const instrumentation = `
 <button id="elsewhere" type="button">Focus target outside the composer</button>
 <iframe id="overlay-stand-in" title="Stands in for the Floating Slate iframe" src="https://example.org${FIXTURE_PATH}frame"></iframe>
@@ -100,6 +103,46 @@ ${instrumentation}
   window.__pmReady = true;
 </script></body></html>`;
 }
+
+// The captured logged-in composer and send button, with a real ProseMirror editor mounted where
+// the captured editor sits. Where the send button sits relative to the composer was not
+// captured, so `arrangement` puts both in one <form> ("form") or in a shared <div> with no form
+// ("wrapper"). Harness additions: the button starts disabled and is enabled from ProseMirror's
+// state, the way the existing ProseMirror pages do; its presses are counted; form submission is
+// blocked; a type="button" stands in for the temporary-chat toggle as a focus target that is not
+// editable; `before` is markup placed ahead of the composer.
+function loggedInPage({ arrangement, before = "" }) {
+  const tag = arrangement === "form" ? "form" : "div";
+  return `<!doctype html><html><body>
+<button id="temporary-chat-toggle" type="button" aria-label="Temporary chat">Temporary chat</button>
+${before}
+<${tag} id="composer-container">${artifact}${sendButtonArtifact}</${tag}>
+${instrumentation}
+<script type="module">${pmImports}
+  const container = document.querySelector("#composer-container");
+  const mount = container.querySelector("[data-rich-text-layout]");
+  mount.querySelector("[contenteditable]").remove();
+  const send = container.querySelector("button[aria-label='Send']");
+  send.disabled = true;
+  send.addEventListener("click", () => { window.__sendClicks += 1; });
+  window.__formSubmits = 0;
+  document.addEventListener("submit", (event) => { event.preventDefault(); window.__formSubmits += 1; });
+  const view = new EditorView(mount, {
+    state: EditorState.create({ schema }),
+    attributes: { "data-composer-markdown": "", "aria-label": "Ask ChatGPT", role: "textbox", "aria-multiline": "true", translate: "no" },
+    dispatchTransaction(transaction) {
+      view.updateState(view.state.apply(transaction));
+      window.__pmText = view.state.doc.textContent;
+      send.disabled = !window.__pmText.trim();
+    }
+  });
+  window.__recordEvents(view.dom);
+  window.__pmReady = true;
+</script></body></html>`;
+}
+
+// An enabled submit button that does not belong to the composer, placed ahead of it.
+const unrelatedSubmit = `<div role="dialog"><button id="dismiss" type="submit" aria-label="Dismiss" onclick="window.__dismissClicks = (window.__dismissClicks || 0) + 1">Dismiss</button></div>`;
 
 // The logged-out composer captured from chatgpt.com on 2026-09-28 (Playwright, no login, empty
 // composer): the form and textarea attributes, and the form's three visible buttons in captured
@@ -166,6 +209,11 @@ ${instrumentation}
     attributes: { "aria-label": "Document editor" },
     sendAttributes: 'id="composer-submit-button"'
   }),
+  "logged-in-form": loggedInPage({ arrangement: "form" }),
+  "logged-in-wrapper": loggedInPage({ arrangement: "wrapper" }),
+  "logged-in-unrelated-submit": loggedInPage({ arrangement: "wrapper", before: unrelatedSubmit }),
+  // A second visible copy of the captured composer ahead of the ProseMirror one.
+  "logged-in-two-composers": loggedInPage({ arrangement: "wrapper", before: `<div id="second-composer">${artifact}</div>` }),
   "logged-out": loggedOutPage({ becomesReady: true }),
   // The same page ignoring input, so Send never becomes ready.
   "logged-out-never-ready": loggedOutPage({ becomesReady: false }),
@@ -234,7 +282,7 @@ async function scenario(browser, { id, name, expected, fixture, host = "https://
   const page = await context.newPage();
   try {
     await page.goto(`${host}${FIXTURE_PATH}${fixture}`);
-    if (fixture.startsWith("prosemirror")) await page.waitForFunction(() => window.__pmReady === true, null, { timeout: 30000 });
+    if (fixture.startsWith("prosemirror") || fixture.startsWith("logged-in")) await page.waitForFunction(() => window.__pmReady === true, null, { timeout: 30000 });
     await injectSaySlate(page);
     const { checks, detail } = await run(page);
     record(id, name, expected, checks, detail);
@@ -342,11 +390,20 @@ await scenario(browser, {
 });
 
 await scenario(browser, {
-  id: "B7", name: "Saved target is another chatgpt.com field", expected: "negative", fixture: "logged-out",
+  id: "B7", name: "Saved target is another chatgpt.com field: composer found and submitted", expected: "positive", fixture: "logged-out",
   run: async (page) => {
     const result = await runCommand(page, { focus: "#search", action: "insert-submit" });
-    const state = await pageState(page, "#search");
-    return { checks: { "wrong-target": result?.mode === "wrong-target", "field unchanged": state.text === "", "not submitted": state.sendClicks === 0 }, detail: summary(result, state) };
+    const state = await pageState(page, "#mobile-composer-prompt");
+    const search = await pageState(page, "#search");
+    return {
+      checks: {
+        submitted: result?.mode === "submitted",
+        "text in composer": state.text === TEXT,
+        "other field unchanged": search.text === "",
+        "only Send pressed, once, when ready": JSON.stringify(state.presses) === JSON.stringify([{ label: "Send message", ready: true }])
+      },
+      detail: `${summary(result, state)}; search=${JSON.stringify(search.text)}; presses=${JSON.stringify(state.presses)}`
+    };
   }
 });
 
@@ -389,6 +446,63 @@ await scenario(browser, {
         "no button pressed": state.presses?.length === 0 && state.sendClicks === 0
       },
       detail: `${summary(result, state)}; presses=${JSON.stringify(state.presses)}`
+    };
+  }
+});
+
+const LOGGED_IN_COMPOSER = "#composer-container [contenteditable='true']";
+const loggedInChecks = (result, state) => ({
+  submitted: result?.mode === "submitted",
+  "ProseMirror state holds text": state.pmText === TEXT,
+  "captured Send pressed once": state.sendClicks === 1
+});
+
+for (const [id, arrangement, label] of [["B12", "form", "in one form"], ["B13", "wrapper", "in a shared wrapper, no form"]]) {
+  await scenario(browser, {
+    id, name: `Logged-in composer and captured Send ${label}, process and submit`, expected: "positive", fixture: `logged-in-${arrangement}`,
+    run: async (page) => {
+      const result = await runCommand(page, { focus: LOGGED_IN_COMPOSER, action: "insert-submit" });
+      const state = await pageState(page, LOGGED_IN_COMPOSER);
+      return { checks: loggedInChecks(result, state), detail: summary(result, state) };
+    }
+  });
+}
+
+await scenario(browser, {
+  id: "B14", name: "Opened while the temporary-chat toggle stand-in has focus: composer found and submitted", expected: "positive", fixture: "logged-in-wrapper",
+  run: async (page) => {
+    const result = await runCommand(page, { focus: "#temporary-chat-toggle", action: "insert-submit" });
+    const state = await pageState(page, LOGGED_IN_COMPOSER);
+    return { checks: loggedInChecks(result, state), detail: summary(result, state) };
+  }
+});
+
+await scenario(browser, {
+  id: "B15", name: "Enabled unrelated submit button ahead of the composer is never pressed", expected: "negative", fixture: "logged-in-unrelated-submit",
+  run: async (page) => {
+    const result = await runCommand(page, { focus: LOGGED_IN_COMPOSER, action: "insert-submit" });
+    const state = await pageState(page, LOGGED_IN_COMPOSER);
+    const dismissClicks = await page.evaluate(() => window.__dismissClicks ?? 0);
+    return {
+      checks: { "unrelated button not pressed": dismissClicks === 0, ...loggedInChecks(result, state) },
+      detail: `${summary(result, state)}; dismissClicks=${dismissClicks}`
+    };
+  }
+});
+
+await scenario(browser, {
+  id: "B16", name: "Two visible composers, cursor in neither", expected: "negative", fixture: "logged-in-two-composers",
+  run: async (page) => {
+    const result = await runCommand(page, { focus: "#temporary-chat-toggle", action: "insert-submit" });
+    const state = await pageState(page, LOGGED_IN_COMPOSER);
+    const second = await pageState(page, "#second-composer [contenteditable='true']");
+    return {
+      checks: {
+        "wrong-target": result?.mode === "wrong-target",
+        "neither composer filled": !state.pmText && state.text === "" && second.text === "",
+        "not submitted": state.sendClicks === 0
+      },
+      detail: `${summary(result, state)}; second=${JSON.stringify(second.text)}`
     };
   }
 });

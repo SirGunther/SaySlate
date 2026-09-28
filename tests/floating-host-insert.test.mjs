@@ -1,8 +1,9 @@
 // Floating Slate's page-side insertion (floatingHost.js) loaded with the real ChatGPT adapter
 // and shortcut protocol, driven through the same runtime messages background.js relays:
 // open the overlay on a focused field, then "insert" or "insert-submit". Covers the ChatGPT
-// composer variants, the manual contenteditable fallback, and the conditions that must stop
-// a submission or fall back to the clipboard.
+// composer variants, the logged-in send button, finding the composer when the saved target is
+// not one, the manual contenteditable fallback, and the conditions that must stop a
+// submission or fall back to the clipboard.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -10,6 +11,7 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { FakeElement, FakeInput, FakeTextArea, element, rootElement } from "./support/elementModel.mjs";
 import { loggedOutComposer, pressCounts, showTypedState } from "./support/chatGPTLoggedOutComposer.mjs";
+import { loggedInComposer } from "./support/chatGPTLoggedInComposer.mjs";
 
 const extensionRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sources = ["chatGPTAdapter.js", "shortcutProtocol.js", "floatingHost.js"]
@@ -62,6 +64,7 @@ function createPage({ hostname = "chatgpt.com", execInsertText = true, clipboard
     createElement: (tag) => element(tag),
     createTextNode: (data) => ({ data }),
     querySelector: (selector) => documentRef.documentElement.querySelector(selector),
+    querySelectorAll: (selector) => documentRef.documentElement.querySelectorAll(selector),
     // Chrome's insertText edits the node holding the caret, then fires one input event on
     // the editing host. It returns false when the command is unavailable.
     execCommand(command, _showUi, value) {
@@ -169,6 +172,98 @@ function sendButton(page, attributes = { id: "composer-submit-button" }) {
 
 const inputEvents = (node) => node.events.filter((event) => event.type === "input");
 
+// The captured logged-in composer and its marker-less send button, added to the page.
+function addLoggedInComposer(page, arrangement) {
+  const parts = loggedInComposer({ arrangement });
+  page.body.append(parts.container);
+  return parts;
+}
+
+// Positive: Floating Slate opened with nothing editable focused, as in a fresh chat where the
+// focused element was not the composer. The page's one composer is found, filled, and
+// submitted with the logged-in send button.
+for (const arrangement of ["form", "wrapper"]) {
+  const page = createPage();
+  const { editor, send } = addLoggedInComposer(page, arrangement);
+  await page.openOn(page.body);
+  const result = await page.command("insert-submit");
+  assert.equal(result.mode, "submitted", `${arrangement}: ${result.message}`);
+  assert.equal(result.ok, true);
+  assert.equal(editor.textContent, TEXT);
+  assert.equal(send.clicks, 1, `the logged-in send button must be pressed once (${arrangement})`);
+  assert.equal(inputEvents(editor).length, 1, "the insertion must reach the located editor as one input event");
+}
+
+// Positive: the saved target is another chatgpt.com field. The composer is found and
+// submitted, and the other field is left unchanged.
+{
+  const page = createPage();
+  const { editor, send } = addLoggedInComposer(page, "wrapper");
+  const search = element("textarea", { name: "search" });
+  page.body.append(search);
+  await page.openOn(search);
+  const result = await page.command("insert-submit");
+  assert.equal(result.mode, "submitted", result.message);
+  assert.equal(editor.textContent, TEXT);
+  assert.equal(send.clicks, 1);
+  assert.equal(search.value, "", "the other field must be unchanged");
+  assert.deepEqual(inputEvents(search), []);
+  assert.deepEqual(page.clipboard, []);
+}
+
+// Positive: the saved target is the logged-in composer; its marker-less send button is pressed.
+for (const arrangement of ["form", "wrapper"]) {
+  const page = createPage();
+  const { editor, paragraph, send } = addLoggedInComposer(page, arrangement);
+  await page.openOn(editor, paragraph);
+  const result = await page.command("insert-submit");
+  assert.equal(result.mode, "submitted", `${arrangement}: ${result.message}`);
+  assert.equal(editor.textContent, TEXT);
+  assert.equal(send.clicks, 1);
+}
+
+// Negative: no composer on the page. Nothing is inserted, copied, or pressed.
+{
+  const page = createPage();
+  const search = element("textarea", { name: "search" });
+  const stray = element("button", { type: "submit", "aria-label": "Send" });
+  page.body.append(search, stray);
+  await page.openOn(page.body);
+  const result = await page.command("insert-submit");
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, "wrong-target");
+  assert.match(result.message, /Place the cursor in the ChatGPT message composer/);
+  assert.equal(search.value, "");
+  assert.deepEqual(page.clipboard, []);
+  assert.equal(stray.clicks, 0);
+}
+
+// Negative: two visible composers. SaySlate does not guess between them.
+{
+  const page = createPage();
+  const first = addLoggedInComposer(page, "wrapper");
+  const second = addLoggedInComposer(page, "form");
+  await page.openOn(page.body);
+  const result = await page.command("insert-submit");
+  assert.equal(result.ok, false);
+  assert.equal(result.mode, "wrong-target");
+  assert.deepEqual([first.editor.textContent, second.editor.textContent], ["", ""], "neither composer may be filled");
+  assert.deepEqual([first.send.clicks, second.send.clicks], [0, 0], "neither send button may be pressed");
+  assert.deepEqual(page.clipboard, []);
+}
+
+// Negative: a hidden composer is not a target, even when it is the only one.
+{
+  const page = createPage();
+  const hidden = addLoggedInComposer(page, "form");
+  hidden.container.setAttribute("hidden", "");
+  await page.openOn(page.body);
+  const result = await page.command("insert-submit");
+  assert.equal(result.mode, "wrong-target");
+  assert.equal(hidden.editor.textContent, "");
+  assert.equal(hidden.send.clicks, 0);
+}
+
 // Positive: the id-less ProseMirror composer is accepted, filled, and submitted once.
 {
   const page = createPage();
@@ -247,21 +342,24 @@ const inputEvents = (node) => node.events.filter((event) => event.type === "inpu
   assert.equal(send.clicks, 0);
 }
 
-// Negative: the saved target on chatgpt.com is not the composer. Nothing is inserted, copied,
-// or submitted.
+// Negative: ChatGPT replaced the logged-out textarea composer alone, leaving its form. The
+// removed textarea no longer sits in a form, but it is still not swapped for the new composer:
+// nothing is inserted there and Send, though ready, is not pressed.
 {
   const page = createPage();
-  currentComposer(page);
-  const send = sendButton(page);
-  const search = element("textarea", { name: "search" });
-  page.body.append(search);
-  await page.openOn(search);
+  const composer = loggedOutComposer();
+  page.body.append(composer.form);
+  await page.openOn(composer.textarea);
+  const host = composer.textarea.parentElement;
+  composer.textarea.remove();
+  const replacement = element("textarea", { id: "mobile-composer-prompt", name: "prompt" });
+  host.append(replacement);
+  showTypedState(composer);
   const result = await page.command("insert-submit");
   assert.equal(result.ok, false);
   assert.equal(result.mode, "wrong-target");
-  assert.equal(search.value, "");
-  assert.deepEqual(page.clipboard, []);
-  assert.equal(send.clicks, 0);
+  assert.equal(replacement.value, "");
+  assert.deepEqual(pressCounts(composer), [0, 0, 0]);
 }
 
 // Negative: a ProseMirror editor without composer markers, such as a document editor.
