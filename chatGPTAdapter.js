@@ -1,7 +1,12 @@
 (() => {
   "use strict";
 
-  const SEND_BUTTON_SELECTOR = "#composer-submit-button";
+  // ChatGPT serves more than one composer. The editor selector matches the ProseMirror
+  // composer with its older `#prompt-textarea` id and without it (`data-composer-markdown`).
+  // The send selector matches the `#composer-submit-button` id and the `data-composer-submit`
+  // attribute used by the textarea composer (`#mobile-composer-prompt`).
+  const COMPOSER_EDITOR_SELECTOR = "#prompt-textarea, [contenteditable='true'][data-composer-markdown]";
+  const SEND_BUTTON_SELECTOR = "#composer-submit-button, button[data-composer-submit]";
   const DEFAULT_TIMEOUT_MS = 20000;
   const DEFAULT_POLL_MS = 150;
 
@@ -12,7 +17,7 @@
 
   function isChatGPTComposer(element) {
     if (!element?.matches) return false;
-    if (element.matches("#prompt-textarea")) return true;
+    if (element.matches(COMPOSER_EDITOR_SELECTOR)) return true;
     if (!element.matches("textarea")) return false;
     return Boolean(element.closest?.("form")?.querySelector?.(SEND_BUTTON_SELECTOR));
   }

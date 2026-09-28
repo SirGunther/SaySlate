@@ -37,6 +37,7 @@ The **AI provider profiles** below (Gemini, OpenAI, Anthropic Claude, and a Cust
 
 - AI provider failures on the full page and Floating Slate now show the HTTP status and, for Gemini, Google's own reason (for example, HTTP 503 "This model is currently experiencing high demand"), instead of only "The provider request failed."
 - On the full page, Ctrl+Alt+D and Ctrl+Alt+X no longer act while an AI pass runs, and Ctrl+Alt+R no longer copies while the second pass runs, matching their buttons.
+- On chatgpt.com, Floating Slate's process and submit (**Ctrl + Alt + S** or the send icon) accepts ChatGPT's message composer again. ChatGPT's current ProseMirror composer has no `#prompt-textarea` id, and its logged-out textarea composer has a `data-composer-submit` send button instead of `#composer-submit-button`, so SaySlate refused both with "Place the cursor in the ChatGPT message composer before opening SaySlate." The adapter now also recognizes the `data-composer-markdown` editor and the `data-composer-submit` send button. Other fields on chatgpt.com are still refused.
 
 ### Safety
 
@@ -57,6 +58,8 @@ The **AI provider profiles** below (Gemini, OpenAI, Anthropic Claude, and a Cust
 - Added focused tests for AI provider settings, the registry and permissions, each transport, Test Connection, the dispatcher, and the provider UI; `node tests/verify.mjs` passes.
 - Live, 2026-09-23: from the Chrome machine, a Custom profile reached LM Studio (`google/gemma-4-12b-qat`) through Tailscale Serve, and both Test Connection and a first pass succeeded. Against a local LM Studio, the real client sending `reasoning_effort: "none"` returned 0 reasoning tokens, and on the LM Studio host, whose saved Enable Thinking setting is on, a SaySlate pass also returned 0 reasoning tokens.
 - Live, 2026-09-23: Gemini requests reached Google and the key was accepted, but `gemini-3.1-flash-lite` answered HTTP 503 (high demand), so a successful Gemini generation on this build has not been observed yet. OpenAI and Claude profiles have not been run live.
+- Added `tests/floating-host-insert.test.mjs`, which drives Floating Slate's page-side insertion and ChatGPT submission (including the `input` event from the manual contenteditable fallback), and composer-variant cases in `tests/chatgpt-adapter.test.mjs`. `node tests/verify.mjs` runs both.
+- Added the opt-in browser check `tests/browser/chatgpt-composer.browser.mjs` (Playwright with Chrome; `verify.mjs` does not run it). On 2026-09-28 it passed 10 fixture scenarios in Chrome, one with a real ProseMirror editor, and one live run against the logged-out chatgpt.com with the send click intercepted, so nothing was sent. The logged-in composer was checked only through the captured markup in `tests/fixtures/chatgpt-composer-2026-09-28.html`.
 
 ### Documentation
 
