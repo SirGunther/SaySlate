@@ -32,8 +32,11 @@ The **AI provider profiles** below (Gemini, OpenAI, Anthropic Claude, and a Cust
 - The existing Gemini key and model migrate once into a Gemini profile; a deleted or cleared profile is never re-created by that migration.
 - Custom endpoints must be HTTPS. Access is requested for the exact configured origin only, and only when you click Save or Test Connection (`optional_host_permissions: https://*/*`); Gemini and Local Whisper keep their fixed grants.
 - The full-page status badge now shows each AI pass as it runs ("Phase 1", "Phase 2"), then its result, matching Floating Slate.
+- Floating Slate has a **Restore dictation** button. Before an AI pass replaces dictated text, Floating Slate saves that text, and the button puts it back, including after Floating Slate was closed by **Ctrl + Alt + F** or **Ctrl + Alt + S** and opened again. Clear does not remove the saved dictation; the next pass on new text replaces it.
 
 ### Fixed
+
+- Custom (LM Studio) AI passes no longer come back cut off mid-sentence. When the model opened a quotation with a bare `"` after a space, that quote ended the structured `{ "text": ... }` result, LM Studio closed it and stopped, and SaySlate used the cut text without an error. On 2026-11-23 two real first passes stopped at "it needs to say something like" and "We'll call it", and each second pass received only the cut text. Custom profiles now send the same structured schema with a rule that the text may not end on a space, so the model writes the quote as `\"` and carries on. As a safety net, a Custom result that still ends in a space is rejected with a "cut off mid-sentence" notice and the existing text is left unchanged. Against the Gemma 4 26B with the real first-pass prompt, 9 of 72 passes were cut before the change and 0 of 72 after; with the rule removed, the safety net rejected all 4 cuts in 72 passes. Gemini, OpenAI, and Anthropic profiles are unchanged.
 
 - AI provider failures on the full page and Floating Slate now show the HTTP status and, for Gemini, Google's own reason (for example, HTTP 503 "This model is currently experiencing high demand"), instead of only "The provider request failed."
 - On the full page, Ctrl+Alt+D and Ctrl+Alt+X no longer act while an AI pass runs, and Ctrl+Alt+R no longer copies while the second pass runs, matching their buttons.

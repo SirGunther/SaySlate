@@ -86,7 +86,8 @@ function buildFakeDom() {
     firstPassButton: register("firstPassButton"),
     secondPassButton: register("secondPassButton"),
     copyButton: register("copyButton"),
-    clearButton: register("clearButton")
+    clearButton: register("clearButton"),
+    restoreButton: register("restoreButton")
   };
   elements.notice.hidden = true;
 
@@ -227,9 +228,9 @@ const DEFAULT_GRAMMAR_CONFIG = Object.freeze({
   firstPassPrompt: "Clean this up", secondPassPrompt: "", secondPassEnabled: false
 });
 
-function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_GRAMMAR_CONFIG, providerProfile = {} } = {}) {
+function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_GRAMMAR_CONFIG, providerProfile = {}, extraStore = {} } = {}) {
   const { document, elements } = buildFakeDom();
-  const fakeChrome = buildFakeChrome({ "sayslate-grammar-config": grammarConfig });
+  const fakeChrome = buildFakeChrome({ "sayslate-grammar-config": grammarConfig, ...extraStore });
   seedProviderProfile(fakeChrome, providerProfile);
   const aiCalls = [];
   const reasoningCalls = [];
@@ -671,6 +672,97 @@ function buildEnvironment({ session = "int-session-1", grammarConfig = DEFAULT_G
   await flush();
   await flush();
   assert.equal(env.aiCalls.length - before, 1, "F3: a synchronous double trigger on the floating surface must produce exactly one generation request");
+}
+
+// ---- LD-044: Finish saves the dictation before the pass replaces it; Restore brings it back ----
+
+{
+  const env = buildEnvironment({ session: "int-session-restore" });
+  await flush();
+  await flush();
+
+  assert.equal(env.elements.restoreButton.disabled, true, "nothing saved yet, so Restore starts disabled");
+
+  env.elements.transcript.value = "my original dictation with every word";
+  env.elements.transcript.dispatch("input");
+  env.elements.finishButton.dispatch("click");
+  await flush();
+  await flush();
+  await flush();
+
+  assert.equal(env.fakeChrome.insertCalls.at(-1).text, "PROCESSED TEXT");
+  assert.equal(env.elements.transcript.value, "PROCESSED TEXT", "the pass result replaces the dictation in the box");
+  assert.equal(env.fakeChrome.localStore["sayslate-floating-last-dictation"].text, "my original dictation with every word", "the dictation is saved before the pass replaces it");
+  assert.equal(env.elements.restoreButton.disabled, false, "Restore is available once the dictation was replaced");
+
+  env.elements.restoreButton.dispatch("click");
+  assert.equal(env.elements.transcript.value, "my original dictation with every word", "Restore puts the original dictation back");
+  assert.equal(env.elements.restoreButton.disabled, true, "Restore disables once the box already holds the saved dictation");
+
+  // A restored dictation is raw text again: the next pass runs on it, not on the old result.
+  env.elements.firstPassButton.dispatch("click");
+  await flush();
+  await flush();
+  assert.ok(env.aiCalls.at(-1).includes("my original dictation with every word"), "a pass after Restore processes the restored dictation");
+
+  console.log("LD-044 Finish saves the dictation and Restore brings it back verified.");
+}
+
+// ---- LD-044: a reopened Floating Slate can restore the dictation saved by the last one; Clear keeps it ----
+
+{
+  const env = buildEnvironment({
+    session: "int-session-restore-reopen",
+    extraStore: { "sayslate-floating-last-dictation": { text: "dictation from before the overlay closed", savedAt: "2026-11-23T16:10:23.000Z" } }
+  });
+  await flush();
+  await flush();
+
+  assert.equal(env.elements.restoreButton.disabled, false, "a saved dictation from an earlier Floating Slate is restorable on open");
+
+  env.elements.transcript.value = "something new";
+  env.elements.transcript.dispatch("input");
+  env.elements.clearButton.dispatch("click");
+  assert.equal(env.elements.restoreButton.disabled, false, "Clear does not remove the saved dictation");
+
+  env.elements.restoreButton.dispatch("click");
+  assert.equal(env.elements.transcript.value, "dictation from before the overlay closed");
+
+  console.log("LD-044 reopen-and-restore and Clear-keeps-saved-dictation verified.");
+}
+
+// ---- LD-043: a cut-off Custom pass leaves the dictation in place and says it was cut off ----
+
+{
+  const env = buildEnvironment({
+    session: "int-session-cut-off",
+    providerProfile: { providerKind: "custom", endpoint: "https://lmstudio.example-tailnet.ts.net/v1", modelId: "local-model" }
+  });
+  await flush();
+  await flush();
+
+  env.context.SaySlateOpenAICompatibleClient = {
+    async generate() {
+      const error = new Error("The AI result was cut off before it finished.");
+      error.code = "malformed_response";
+      error.cutOff = true;
+      throw error;
+    }
+  };
+
+  env.elements.transcript.value = "the status should say something like waiting on Mark";
+  env.elements.transcript.dispatch("input");
+  env.elements.finishButton.dispatch("click");
+  await flush();
+  await flush();
+  await flush();
+
+  assert.equal(env.elements.transcript.value, "the status should say something like waiting on Mark", "a cut-off pass must not replace the dictation");
+  assert.equal(env.fakeChrome.insertCalls.length, 0, "a cut-off pass must stop Finish before anything is inserted");
+  assert.match(env.elements.notice.textContent, /cut off mid-sentence/, "the notice says the pass was cut off");
+  assert.match(env.elements.notice.textContent, /unchanged/, "the notice says the text is unchanged");
+
+  console.log("LD-043 cut-off pass keeps the dictation and stops Finish verified.");
 }
 
 console.log("Floating dictation integration (both providers, Finish ordering, failed-stop blocking, Escape/Clear cancellation, beforeunload teardown, and no-fallback errors) verified.");

@@ -553,3 +553,47 @@ console.log("OpenAI-compatible client contract boundary verified.");
 }
 
 console.log("SAYREASON-01A streaming scenarios verified.");
+
+// ==== LD-043: rejectCutText - a schema result whose text ends in whitespace was cut off ====
+// The exact shape LM Studio returned on 2026-11-23 when the model typed a bare `"` after a
+// space: the string closed early and the object was closed right after it.
+
+const CUT_CONTENT = '{\n  "text": "And then on the card, the status should say something like "}';
+const COMPLETE_CONTENT = JSON.stringify({ text: 'The status should say something like "waiting on Mark," because that is where it is.' });
+
+{
+  const client = createClient(async (url, options) => sseResponse([dataLine({ choices: [{ delta: { content: CUT_CONTENT } }] }), "data: [DONE]\n"], { signal: options.signal }));
+  await assert.rejects(
+    client.generate({ endpoint: ENDPOINT, credential: "", modelId: "m", systemPrompt: "", userPrompt: "u", schema: SCHEMA, stream: true, rejectCutText: true }),
+    (error) => error.code === "malformed_response" && error.cutOff === true
+  );
+
+  console.log("LD-043 streamed cut-off result rejected verified.");
+}
+
+{
+  const client = createClient(async () => ({ ok: true, status: 200, async json() { return { choices: [{ message: { content: CUT_CONTENT } }] }; } }));
+  await assert.rejects(
+    client.generate({ endpoint: ENDPOINT, credential: "", modelId: "m", systemPrompt: "", userPrompt: "u", schema: SCHEMA, rejectCutText: true }),
+    (error) => error.code === "malformed_response" && error.cutOff === true
+  );
+
+  console.log("LD-043 JSON-path cut-off result rejected verified.");
+}
+
+{
+  const client = createClient(async (url, options) => sseResponse([dataLine({ choices: [{ delta: { content: COMPLETE_CONTENT } }] }), "data: [DONE]\n"], { signal: options.signal }));
+  const result = await client.generate({ endpoint: ENDPOINT, credential: "", modelId: "m", systemPrompt: "", userPrompt: "u", schema: SCHEMA, stream: true, rejectCutText: true });
+  assert.equal(result, 'The status should say something like "waiting on Mark," because that is where it is.', "a complete result with escaped quotes passes unchanged");
+
+  console.log("LD-043 complete result with quotes accepted verified.");
+}
+
+{
+  // Without rejectCutText (OpenAI and every non-Custom caller) behavior is unchanged: trimmed.
+  const client = createClient(async () => ({ ok: true, status: 200, async json() { return { choices: [{ message: { content: CUT_CONTENT } }] }; } }));
+  const result = await client.generate({ endpoint: ENDPOINT, credential: "k", modelId: "m", systemPrompt: "", userPrompt: "u", schema: SCHEMA });
+  assert.equal(result, "And then on the card, the status should say something like");
+
+  console.log("LD-043 default (rejectCutText off) keeps trimming verified.");
+}

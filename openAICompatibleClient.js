@@ -45,8 +45,17 @@
     return choice?.message || null;
   }
 
+  // LD-043: a schema result whose text ends in whitespace was cut off - the model typed a
+  // bare `"` after a space, which closed the string early (see LD-042). It is rejected,
+  // never trimmed and returned, so a cut pass cannot replace the user's text.
+  function cutOffError() {
+    const error = boundedError("malformed_response", "The AI result was cut off before it finished.");
+    error.cutOff = true;
+    return error;
+  }
+
   // LD-022: validates the canonical { text: string } result before unwrapping it.
-  function validateCanonicalText(rawContent) {
+  function validateCanonicalText(rawContent, rejectCutText = false) {
     if (typeof rawContent !== "string") return null;
     let parsed;
     try {
@@ -56,6 +65,7 @@
     }
     if (!parsed || typeof parsed !== "object" || typeof parsed.text !== "string") return null;
     const trimmed = parsed.text.trim();
+    if (trimmed && rejectCutText && /\s$/.test(parsed.text)) throw cutOffError();
     return trimmed ? trimmed : null;
   }
 
@@ -85,7 +95,7 @@
   // only times out when nothing arrives for `timeoutMs` (LD-007). Concatenates
   // `choices[0].delta.content` only - `delta.reasoning_content` and every other field are
   // ignored - then validates the result exactly as the non-streamed JSON path does.
-  async function readEventStream(response, restartTimeout) {
+  async function readEventStream(response, restartTimeout, rejectCutText = false) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -131,7 +141,7 @@
       }
     }
 
-    const text = validateCanonicalText(contentText);
+    const text = validateCanonicalText(contentText, rejectCutText);
     if (!text) {
       throw boundedError("malformed_response", "The AI provider returned a result that did not match the expected schema.");
     }
@@ -149,7 +159,9 @@
     timeoutMs = DEFAULT_TIMEOUT_MS,
     signal,
     reasoningEffort,
-    stream = false
+    stream = false,
+    // LD-043: Custom (LM Studio) profiles pass true; other transports keep trimming as before.
+    rejectCutText = false
   }) {
     const timeoutController = new AbortController();
     let timeout = window.setTimeout(() => timeoutController.abort(), timeoutMs);
@@ -236,14 +248,14 @@
       // stream; one that answered plain JSON anyway (server ignored `stream`) falls
       // through to the existing JSON path below, unchanged.
       if (stream && isEventStream(response)) {
-        return await readEventStream(response, restartTimeout);
+        return await readEventStream(response, restartTimeout, rejectCutText);
       }
 
       const bodyJson = await parseJsonBody(response);
       if (!bodyJson) throw boundedError("malformed_response", "The AI provider returned a non-JSON response.");
       const message = extractMessage(bodyJson);
       if (message?.refusal) throw boundedError("provider_error", "The AI provider refused the request.");
-      const text = validateCanonicalText(message?.content);
+      const text = validateCanonicalText(message?.content, rejectCutText);
       if (!text) {
         throw boundedError("malformed_response", "The AI provider returned a result that did not match the expected schema.");
       }

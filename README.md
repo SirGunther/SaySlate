@@ -62,7 +62,7 @@ The API key and both user-entered prompts are stored in SaySlate's private `chro
 
 On ChatGPT, use **Ctrl + Alt + S** instead when the finished message should be submitted immediately after successful insertion. The ChatGPT-specific button is hidden on other websites.
 
-The floating toolbar also provides individual controls for dictation, finishing, either AI pass, copying, and clearing. Its status indicator shows listening, retrying, first-pass, second-pass, and insertion progress. Press **Escape** to cancel and close it without inserting. Escape closes Floating Slate first whether keyboard focus is inside the overlay or back on the website.
+The floating toolbar also provides individual controls for dictation, finishing, either AI pass, restoring the dictation, copying, and clearing. Before an AI pass replaces dictated text, Floating Slate saves that text; **Restore dictation** puts it back, even after Floating Slate was closed and opened again. Its status indicator shows listening, retrying, first-pass, second-pass, and insertion progress. Press **Escape** to cancel and close it without inserting. Escape closes Floating Slate first whether keyboard focus is inside the overlay or back on the website.
 
 Floating Slate uses the API key, model, prompts, second-pass setting, and theme saved on the full SaySlate page. It preserves the field and caret that were active when opened. For a selected range, insertion replaces the selection. If the target was removed or changed while processing, SaySlate protects the page content and copies the finished result to the clipboard instead. It submits a message only when the user explicitly invokes the ChatGPT-specific **Ctrl + Alt + S** action or its matching button.
 

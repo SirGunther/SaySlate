@@ -12,6 +12,21 @@
     additionalProperties: false
   });
 
+  // LD-042: Custom (LM Studio) profiles add a `pattern` that forbids `text` from ending on a
+  // whitespace character. Under the plain schema, a bare `"` typed after a space (opening a
+  // quotation) ends the string, the server closes the object, and the rest of the pass is
+  // lost. LM Studio's grammar applies `pattern` to the raw JSON string, so the pattern
+  // allows JSON escapes (`\"`, `\\`, `\n`, `\uXXXX`) in the body and requires the last
+  // character to be non-whitespace (or an escaped quote, backslash, or slash).
+  const CUSTOM_TEXT_PATTERN =
+    '^([^"\\\\\\x7F\\x00-\\x1F]|\\\\(["\\\\/bfnrt]|u[0-9a-fA-F]{4}))*([^"\\\\\\x7F\\x00-\\x20]|\\\\["\\\\/])$';
+  const CUSTOM_RESULT_SCHEMA = Object.freeze({
+    type: "object",
+    properties: Object.freeze({ text: Object.freeze({ type: "string", pattern: CUSTOM_TEXT_PATTERN }) }),
+    required: Object.freeze(["text"]),
+    additionalProperties: false
+  });
+
   // LD-025: the dispatcher's bounded failure codes. STRUCTURED_OUTPUT_UNSUPPORTED stays
   // part of the bounded set (callers may still switch on it) but this implementation never
   // throws it for a schema-rejecting 400/422 response - LD-031 supersedes that trigger with
@@ -107,7 +122,16 @@
         // measured on silence, not total time (SAYREASON-01A). OpenAI passes no `stream`
         // and keeps its existing non-streamed, total-time-bounded request untouched.
         const stream = profile.providerKind === registry().PROVIDER_KINDS.CUSTOM ? true : undefined;
-        return requireAdapter("SaySlateOpenAICompatibleClient").generate({ ...adapterArgs, reasoningEffort, stream });
+        // LD-042/LD-043: Custom profiles send the pattern-constrained schema and reject a
+        // result that still ends in whitespace (a server that ignored the pattern).
+        const isCustom = profile.providerKind === registry().PROVIDER_KINDS.CUSTOM;
+        return requireAdapter("SaySlateOpenAICompatibleClient").generate({
+          ...adapterArgs,
+          schema: isCustom ? CUSTOM_RESULT_SCHEMA : CANONICAL_RESULT_SCHEMA,
+          rejectCutText: isCustom,
+          reasoningEffort,
+          stream
+        });
       }
       case transportKinds.ANTHROPIC_MESSAGES: {
         if (!credential) {
@@ -123,6 +147,7 @@
   globalThis.SaySlateAIProviderClient = Object.freeze({
     ERROR_CODES,
     CANONICAL_RESULT_SCHEMA,
+    CUSTOM_RESULT_SCHEMA,
     generate
   });
 })();

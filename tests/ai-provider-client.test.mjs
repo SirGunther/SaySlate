@@ -435,4 +435,94 @@ const REGISTRY_PRESETS = (() => {
   console.log("Dispatcher OpenAI stream field absent verified.");
 }
 
+// ---- LD-042: Custom profiles send the pattern-constrained schema; OpenAI keeps the plain one ----
+
+{
+  const bodies = [];
+  const client = createContext(async (url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return url.includes("lmstudio")
+      ? sseResponseFor("Custom result.")
+      : { ok: true, status: 200, async json() { return { choices: [{ message: { content: JSON.stringify({ text: "OpenAI result." }) } }] }; } };
+  });
+
+  await client.generate({
+    profile: { providerKind: REGISTRY_PRESETS.PROVIDER_KINDS.CUSTOM, endpoint: "https://lmstudio.example-tailnet.ts.net/v1", modelId: "local-model", credential: "" },
+    userPrompt: "perform this pass"
+  });
+  await client.generate({
+    profile: { providerKind: REGISTRY_PRESETS.PROVIDER_KINDS.OPENAI, endpoint: "https://api.openai.com/v1", modelId: "test-model", credential: "test-key-openai" },
+    userPrompt: "perform this pass"
+  });
+
+  const customText = bodies[0].response_format.json_schema.schema.properties.text;
+  assert.equal(customText.type, "string");
+  assert.equal(customText.pattern, client.CUSTOM_RESULT_SCHEMA.properties.text.pattern, "Custom profiles must send the LD-042 pattern");
+  assert.deepEqual(bodies[0].response_format.json_schema.schema.required, ["text"]);
+  assert.equal(bodies[0].response_format.json_schema.schema.additionalProperties, false);
+  assert.ok(!("pattern" in bodies[1].response_format.json_schema.schema.properties.text), "OpenAI profiles keep the plain canonical schema");
+
+  console.log("LD-042 Custom pattern schema / OpenAI plain schema verified.");
+}
+
+// ---- LD-042: what the pattern allows and forbids, over the raw JSON string ----
+// LM Studio's grammar applies `pattern` to the characters between the JSON quotes, so these
+// cases are written in raw (escaped) form.
+
+{
+  const pattern = new RegExp(createContext(async () => ({})).CUSTOM_RESULT_SCHEMA.properties.text.pattern);
+  const allowed = [
+    "Done.",
+    'Call it \\"Lists V1\\" for now.',
+    'It should say \\"waiting on Mark,\\"',
+    "Two lines\\nhere.",
+    "Unicode \\u00e9 is fine.",
+    "x"
+  ];
+  const forbidden = [
+    "And then on the card, the status should say something like ",
+    "trailing tab\t",
+    "ends with an escaped newline\\n",
+    "",
+    'bare " quote inside'
+  ];
+  for (const raw of allowed) assert.ok(pattern.test(raw), `pattern must allow: ${raw}`);
+  for (const raw of forbidden) assert.ok(!pattern.test(raw), `pattern must forbid: ${JSON.stringify(raw)}`);
+
+  console.log("LD-042 pattern allow/forbid cases verified.");
+}
+
+// ---- LD-043: a Custom profile result that still ends in whitespace is rejected as cut off ----
+
+{
+  const client = createContext(async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: (name) => (name.toLowerCase() === "content-type" ? "text/event-stream" : null) },
+    body: {
+      getReader() {
+        let sent = false;
+        return {
+          async read() {
+            if (sent) return { done: true, value: undefined };
+            sent = true;
+            const content = '{\n  "text": "We\'ll call it "}';
+            return { done: false, value: new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\ndata: [DONE]\n`) };
+          }
+        };
+      }
+    }
+  }));
+
+  await assert.rejects(
+    client.generate({
+      profile: { providerKind: REGISTRY_PRESETS.PROVIDER_KINDS.CUSTOM, endpoint: "https://lmstudio.example-tailnet.ts.net/v1", modelId: "local-model", credential: "" },
+      userPrompt: "perform this pass"
+    }),
+    (error) => error.code === "malformed_response" && error.cutOff === true
+  );
+
+  console.log("LD-043 Custom cut-off result rejected through the dispatcher verified.");
+}
+
 console.log("AI provider client dispatcher contract boundary verified.");
