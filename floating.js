@@ -2,6 +2,9 @@
   "use strict";
 
   const PROCESSING_CONFIG_KEY = "sayslate-grammar-config";
+  // LD-044: the dictation a pass is about to replace, kept so Restore can bring it back even
+  // after Floating Slate closed (Ctrl+Alt+F/S close the overlay after inserting).
+  const LAST_DICTATION_KEY = "sayslate-floating-last-dictation";
   // LD-038(1): sayslate-grammar-config carries only prompt fields from here on - no
   // renderer reads, defaults, or writes apiKey/model into it any longer.
   const DEFAULT_CONFIG = Object.freeze({
@@ -29,8 +32,10 @@
   const secondPassButton = document.querySelector("#secondPassButton");
   const copyButton = document.querySelector("#copyButton");
   const clearButton = document.querySelector("#clearButton");
+  const restoreButton = document.querySelector("#restoreButton");
 
   let config = { ...DEFAULT_CONFIG };
+  let lastDictation = "";
   let speech = null;
   let listening = false;
   let processing = false;
@@ -105,7 +110,39 @@
     secondPassButton.disabled = locked || listening || !hasText || !config.secondPassEnabled;
     copyButton.disabled = locked || !hasText;
     clearButton.disabled = locked || (!hasText && !listening);
+    restoreButton.disabled = locked || listening || !lastDictation || lastDictation === transcript.value.trim();
     transcript.readOnly = locked || listening;
+  }
+
+  // LD-044: saved before a pass replaces dictated text. A storage failure must not block the
+  // pass, so it is caught; the in-memory copy still allows Restore while this window is open.
+  async function rememberDictation(text) {
+    lastDictation = text;
+    try {
+      await chrome.storage.local.set({ [LAST_DICTATION_KEY]: { text, savedAt: new Date().toISOString() } });
+    } catch {
+      // Restore still works for this window from the in-memory copy.
+    }
+  }
+
+  async function loadLastDictation() {
+    const stored = await chrome.storage.local.get(LAST_DICTATION_KEY);
+    const saved = stored?.[LAST_DICTATION_KEY]?.text;
+    lastDictation = typeof saved === "string" ? saved : "";
+    renderControls();
+  }
+
+  function restoreDictation() {
+    if (!lastDictation || processing || listening) return;
+    transcript.value = lastDictation;
+    baseText = lastDictation;
+    finalText = "";
+    interimText = "";
+    stage = "raw";
+    hideNotice();
+    setStatus("complete", "Dictation restored");
+    renderControls();
+    transcript.focus();
   }
 
   function renderRecognitionText() {
@@ -219,7 +256,10 @@
       authentication_failed: "The provider rejected the configured credential. Check connection settings on the full SaySlate page.",
       model_unavailable: "That model was not found for this provider. Check connection settings on the full SaySlate page.",
       structured_output_unsupported: "The provider does not support structured output for this request.",
-      malformed_response: "The provider returned a response that did not match the expected shape.",
+      // LD-043: a cut-off result is rejected, so say what happened and that nothing changed.
+      malformed_response: error?.cutOff
+        ? `${passLabel} came back cut off mid-sentence, so it was not used. Your text is unchanged. Try again.`
+        : "The provider returned a response that did not match the expected shape.",
       request_timeout: `${passLabel} timed out. Please try again.`,
       network_error: "SaySlate could not reach the provider. Check your connection.",
       // LD-039: carry the adapter's bounded detail (status and the provider's own reason).
@@ -248,6 +288,8 @@
     showNotice("Running first pass…");
     renderControls();
     try {
+      // LD-044: keep the dictation this pass is about to replace.
+      if (stage === "raw") await rememberDictation(source);
       // LD-038(2): the active profile is resolved from storage at the start of this pass.
       const profile = await resolveActiveProfile();
       if (!profile) {
@@ -288,6 +330,8 @@
     showNotice("Running second pass…");
     renderControls();
     try {
+      // LD-044: a second pass run straight on dictated text replaces it too.
+      if (stage === "raw") await rememberDictation(source);
       // LD-038(2): the active profile is resolved from storage at the start of this pass.
       const profile = await resolveActiveProfile();
       if (!profile) {
@@ -435,6 +479,7 @@
   secondPassButton.addEventListener("click", () => void runSecondPass());
   copyButton.addEventListener("click", () => void copyCurrentText());
   clearButton.addEventListener("click", clearTranscript);
+  restoreButton.addEventListener("click", restoreDictation);
   transcript.addEventListener("input", () => {
     if (!listening) {
       baseText = transcript.value;
@@ -458,11 +503,17 @@
       config = normalizeConfig(changes[PROCESSING_CONFIG_KEY].newValue);
       renderControls();
     }
+    if (area === "local" && changes[LAST_DICTATION_KEY]) {
+      const saved = changes[LAST_DICTATION_KEY].newValue?.text;
+      lastDictation = typeof saved === "string" ? saved : "";
+      renderControls();
+    }
   });
 
   renderControls();
   transcript.focus();
   void loadConfig().catch(() => showNotice("SaySlate settings could not be loaded.", "error"));
+  void loadLastDictation().catch(() => {});
   // Warms the persisted dictation-provider snapshot floatingSpeechClient.js reads on every
   // start(); without this, the in-memory default ("browser") would never be replaced by the
   // actually-saved choice, since nothing else in this document ever calls load().

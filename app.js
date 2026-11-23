@@ -494,7 +494,10 @@
       authentication_failed: "The provider rejected the configured credential. Check connection settings.",
       model_unavailable: "That model was not found for this provider. Check connection settings.",
       structured_output_unsupported: "The provider does not support structured output for this request.",
-      malformed_response: "The provider returned a response that did not match the expected shape.",
+      // LD-043: a cut-off result is rejected, so say what happened and that nothing changed.
+      malformed_response: error?.cutOff
+        ? `${passLabel} came back cut off mid-sentence, so it was not used. The existing text was preserved. Try again.`
+        : "The provider returned a response that did not match the expected shape.",
       request_timeout: `${passLabel} timed out. Please try again.`,
       network_error: "SaySlate could not reach the provider. Check your connection.",
       // LD-039: carry the adapter's bounded detail (status and the provider's own reason).
