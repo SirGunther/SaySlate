@@ -447,6 +447,23 @@
     }
   }
 
+  // Ctrl+Alt+P on the page: the host opens this frame for the highlighted text and sends it
+  // once the frame loads, which can be before the stored prompts have. A pass or dictation
+  // already underway keeps its own text.
+  async function processSelection(text) {
+    if (processing || listening) return;
+    await configReady;
+    if (processing || listening) return;
+    hideNotice();
+    transcript.value = text;
+    baseText = text;
+    finalText = "";
+    interimText = "";
+    stage = "raw";
+    renderControls();
+    await finishWorkflow(true);
+  }
+
   function runShortcut(key) {
     if (key === "d") toggleDictation();
     else if (key === "c" || key === "r") void copyCurrentText();
@@ -489,6 +506,12 @@
   });
   document.addEventListener("keydown", handleShortcut);
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    const selected = shortcuts?.selectionText(message, sessionId) || "";
+    if (selected) {
+      void processSelection(selected);
+      sendResponse({ ok: true });
+      return;
+    }
     const key = shortcuts?.messageKey(message, sessionId) || "";
     if (!key) return;
     runShortcut(key);
@@ -512,7 +535,7 @@
 
   renderControls();
   transcript.focus();
-  void loadConfig().catch(() => showNotice("SaySlate settings could not be loaded.", "error"));
+  const configReady = loadConfig().catch(() => showNotice("SaySlate settings could not be loaded.", "error"));
   void loadLastDictation().catch(() => {});
   // Warms the persisted dictation-provider snapshot floatingSpeechClient.js reads on every
   // start(); without this, the in-memory default ("browser") would never be replaced by the

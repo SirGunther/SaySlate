@@ -35,13 +35,21 @@ const scripts = ["chatGPTAdapter.js", "shortcutProtocol.js", "floatingHost.js"]
   .map((file) => fs.readFileSync(path.join(sourceRoot, file), "utf8"));
 
 // Stands in for background.js: floatingHost.js registers its session through sendMessage and
-// receives host commands through onMessage.
+// receives host commands through onMessage. Every message the host sends is kept in
+// __saySlateMessages, in order, for the cases that check what reached Floating Slate.
+// getURL gives a data: URL so the overlay iframe loads the way the extension page does: later,
+// as a separate origin. Chrome fires no load event for an iframe sent to about:blank#..., so a
+// highlight handed over on load would never be sent. The runtime id is what a content script
+// loses when the extension reloads under it.
 const chromeStub = `(() => {
   const listeners = [];
+  globalThis.__saySlateMessages = [];
   Object.defineProperty(globalThis, "chrome", { configurable: true, writable: true, value: { runtime: {
-    getURL: (file) => "about:blank#" + file,
+    id: "sayslate-test",
+    getURL: (file) => "data:text/html," + file,
     onMessage: { addListener: (listener) => listeners.push(listener) },
     sendMessage: async (message) => {
+      globalThis.__saySlateMessages.push(message);
       if (message?.type === "sayslate-host-register") globalThis.__saySlateSession = message.sessionId;
       return { ok: true };
     }
@@ -99,6 +107,14 @@ ${instrumentation}
     view = new EditorView(mount, {
       state: EditorState.create({ schema }),
       attributes: ${JSON.stringify(attributes)},
+      // Harness addition: ProseMirror has no key bindings of its own and swallows Enter, so
+      // Shift+Enter splits the paragraph here, for a draft typed as two paragraphs.
+      handleKeyDown(editorView, event) {
+        if (event.key !== "Enter" || !event.shiftKey) return false;
+        const tr = editorView.state.tr.deleteSelection();
+        editorView.dispatch(tr.split(tr.selection.from).scrollIntoView());
+        return true;
+      },
       dispatchTransaction(transaction) {
         view.updateState(view.state.apply(transaction));
         window.__pmText = view.state.doc.textContent;
@@ -585,24 +601,413 @@ await scenario(browser, {
   }
 });
 
+// Ctrl+Alt+P: with Floating Slate closed, text highlighted in the composer is handed to Floating
+// Slate, whose result then replaces the highlight and is submitted. The draft is typed and the
+// highlight made with real key presses, the way a user highlights from the keyboard.
+const KEEP_BEFORE = "Keep this. ";
+const KEEP_AFTER = " Keep that.";
+const HIGHLIGHT = "rough draft here.";
+const POLISHED = "Polished text.";
+const REPLACED = `${KEEP_BEFORE}${POLISHED}${KEEP_AFTER}`;
+const ONE_PARAGRAPH = { paragraphs: [`${KEEP_BEFORE}${HIGHLIGHT}${KEEP_AFTER}`], after: KEEP_AFTER.length, length: HIGHLIGHT.length };
+// "rough start" ends the first paragraph and "rough end." begins the second; one Shift+ArrowLeft
+// crosses the break between them.
+const TWO_PARAGRAPHS = {
+  paragraphs: [`${KEEP_BEFORE}rough start`, `rough end.${KEEP_AFTER}`],
+  after: KEEP_AFTER.length,
+  length: "rough end.".length + 1 + "rough start".length
+};
+const PROCESS_SELECTION_KEY = "Control+Alt+KeyP";
+
+// Clicks the field, types `paragraphs` with Shift+Enter between them, moves the caret back over
+// the last `after` characters, and highlights the `length` characters before it.
+async function typeAndHighlight(page, field, { paragraphs, after, length }) {
+  await page.click(field);
+  for (const [index, paragraph] of paragraphs.entries()) {
+    if (index) await page.keyboard.press("Shift+Enter");
+    await page.keyboard.type(paragraph);
+  }
+  for (let step = 0; step < after; step += 1) await page.keyboard.press("ArrowLeft");
+  for (let step = 0; step < length; step += 1) await page.keyboard.press("Shift+ArrowLeft");
+}
+
+// Presses Ctrl+Alt+P and reports what it did. A key SaySlate consumes stops in its window
+// capture listener, so it never reaches the document listener installed here.
+async function pressProcessSelection(page, { expectMessage }) {
+  const highlighted = await page.evaluate(() => {
+    window.__processKeys = [];
+    document.addEventListener("keydown", (event) => {
+      if (event.code === "KeyP") {
+        window.__processKeys.push({ key: event.key, ctrl: event.ctrlKey, alt: event.altKey, defaultPrevented: event.defaultPrevented, inEditor: event.target?.isContentEditable === true });
+      }
+    });
+    const active = document.activeElement;
+    return active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement
+      ? active.value.slice(active.selectionStart, active.selectionEnd)
+      : getSelection().toString();
+  });
+  await page.keyboard.press(PROCESS_SELECTION_KEY);
+  if (expectMessage) {
+    await page.waitForFunction(() => globalThis.__saySlateMessages.some((message) => message.type === "sayslate-floating-selection"), null, { timeout: 5000 })
+      .catch(() => {});
+  }
+  // Time for a duplicate selection message, or for one that should not come at all.
+  await page.waitForTimeout(500);
+  return page.evaluate((selected) => ({
+    highlighted: selected,
+    reachedPage: window.__processKeys,
+    overlay: Boolean(document.getElementById("sayslate-floating-host")),
+    focusInOverlay: document.activeElement?.id === "sayslate-floating-host",
+    session: globalThis.__saySlateSession ?? null
+  }), highlighted);
+}
+
+const selectionMessages = (page) => page.evaluate(() => globalThis.__saySlateMessages.filter((message) => message.type === "sayslate-floating-selection"));
+const sendResult = (page, resultText = POLISHED) => page.evaluate((text) => globalThis.__saySlateSend({
+  type: "sayslate-host-command", sessionId: globalThis.__saySlateSession, action: "insert-submit", text
+}), resultText);
+
+// Highlights in `field` (typing `highlight`, or by `select`), presses Ctrl+Alt+P, runs
+// `beforeResult`, then sends `resultText` as Floating Slate does when its passes finish.
+// `readState` reads the page before the result (after the key and `beforeResult`) and after it.
+async function processSelectionRun(page, {
+  field,
+  highlight = ONE_PARAGRAPH,
+  select = () => typeAndHighlight(page, field, highlight),
+  beforeResult,
+  resultText = POLISHED,
+  readState = (target) => pageState(target, field)
+}) {
+  await select();
+  const pressed = await pressProcessSelection(page, { expectMessage: true });
+  if (beforeResult) await beforeResult();
+  const before = await readState(page);
+  const result = await sendResult(page, resultText);
+  const state = await readState(page);
+  const selections = await selectionMessages(page);
+  return { pressed, before, result, state, selections };
+}
+
+const consumedChecks = ({ pressed, selections }, highlight) => ({
+  "key consumed (never reached the page)": pressed.reachedPage.length === 0,
+  "Floating Slate opened": pressed.overlay,
+  "one selection message, the highlighted text, for the session": selections.length === 1 &&
+    selections[0].sessionId === pressed.session && (highlight instanceof RegExp ? highlight.test(selections[0].text) : selections[0].text === highlight)
+});
+const notConsumedChecks = (pressed, selections) => ({
+  "key reached the page, not prevented": pressed.reachedPage.length === 1 && !pressed.reachedPage[0].defaultPrevented,
+  "no Floating Slate": !pressed.overlay,
+  "no selection message": selections.length === 0
+});
+const processDetail = ({ pressed, before, result, state, selections }) =>
+  `mode=${result?.mode}; before=${JSON.stringify(before.pmText ?? before.text)}; text=${JSON.stringify(state.text)}; pm=${JSON.stringify(state.pmText ?? null)}; ` +
+  `clicks=${state.sendClicks ?? null}; reachedPage=${JSON.stringify(pressed.reachedPage)}; overlay=${pressed.overlay}; ` +
+  `focusInOverlay=${pressed.focusInOverlay}; selections=${JSON.stringify(selections.map((message) => message.text))}`;
+
+for (const { id, fixture, label } of [
+  { id: "B20", fixture: "prosemirror-current", label: "data-composer-markdown" },
+  { id: "B21", fixture: "prosemirror-legacy", label: "#prompt-textarea (v1.11.4 markup)" }
+]) {
+  await scenario(browser, {
+    id, name: `Ctrl+Alt+P on a phrase highlighted in the ${label} ProseMirror composer: highlight replaced and submitted`, expected: "positive", fixture,
+    run: async (page) => {
+      const run = await processSelectionRun(page, { field: COMPOSER });
+      return {
+        checks: {
+          ...consumedChecks(run, HIGHLIGHT),
+          "draft untouched by the key": run.before.pmText === ONE_PARAGRAPH.paragraphs[0],
+          submitted: run.result?.mode === "submitted",
+          "highlight replaced in the DOM": run.state.text === REPLACED,
+          "highlight replaced in ProseMirror's state": run.state.pmText === REPLACED,
+          "pressed once": run.state.sendClicks === 1
+        },
+        detail: processDetail(run)
+      };
+    }
+  });
+}
+
+await scenario(browser, {
+  id: "B22", name: "Ctrl+Alt+P on a highlight across two ProseMirror paragraphs: line break handed over, both parts replaced", expected: "positive", fixture: "prosemirror-current",
+  run: async (page) => {
+    const readState = async (target) => ({
+      ...(await pageState(target, COMPOSER)),
+      paragraphs: await target.evaluate((selector) => document.querySelectorAll(`${selector} p`).length, COMPOSER)
+    });
+    const run = await processSelectionRun(page, { field: COMPOSER, highlight: TWO_PARAGRAPHS, readState });
+    return {
+      checks: {
+        ...consumedChecks(run, /^rough start\n+rough end\.$/),
+        "two paragraphs before the result": run.before.paragraphs === 2,
+        submitted: run.result?.mode === "submitted",
+        "both parts replaced, one paragraph left": run.state.text === REPLACED && run.state.paragraphs === 1,
+        "ProseMirror's state agrees": run.state.pmText === REPLACED,
+        "pressed once": run.state.sendClicks === 1
+      },
+      detail: `${processDetail(run)}; paragraphs ${run.before.paragraphs}->${run.state.paragraphs}`
+    };
+  }
+});
+
+await scenario(browser, {
+  id: "B23", name: "Ctrl+Alt+P in the captured composer markup (plain contenteditable): highlight replaced and submitted", expected: "positive", fixture: "artifact",
+  run: async (page) => {
+    const run = await processSelectionRun(page, { field: COMPOSER });
+    return {
+      checks: {
+        ...consumedChecks(run, HIGHLIGHT),
+        "draft untouched by the key": run.before.text === ONE_PARAGRAPH.paragraphs[0],
+        submitted: run.result?.mode === "submitted",
+        "highlight replaced": run.state.text === REPLACED,
+        "pressed once": run.state.sendClicks === 1
+      },
+      detail: processDetail(run)
+    };
+  }
+});
+
+await scenario(browser, {
+  id: "B24", name: "Ctrl+Alt+P in the logged-out textarea composer: highlight replaced through value and submitted", expected: "positive", fixture: "logged-out",
+  run: async (page) => {
+    const run = await processSelectionRun(page, { field: "#mobile-composer-prompt" });
+    return {
+      checks: {
+        ...consumedChecks(run, HIGHLIGHT),
+        "draft untouched by the key": run.before.text === ONE_PARAGRAPH.paragraphs[0],
+        submitted: run.result?.mode === "submitted",
+        "highlight replaced": run.state.text === REPLACED,
+        "only Send pressed, once, when ready": JSON.stringify(run.state.presses) === JSON.stringify([{ label: "Send message", ready: true }]),
+        "form submitted once": run.state.sendClicks === 1
+      },
+      detail: `${processDetail(run)}; presses=${JSON.stringify(run.state.presses)}`
+    };
+  }
+});
+
+await scenario(browser, {
+  id: "B25", name: "Ctrl+Alt+P in the logged-in composer with the captured Send: highlight replaced and submitted", expected: "positive", fixture: "logged-in-form",
+  run: async (page) => {
+    const run = await processSelectionRun(page, { field: LOGGED_IN_COMPOSER, readState: loggedInState });
+    return {
+      checks: {
+        ...consumedChecks(run, HIGHLIGHT),
+        "draft untouched by the key": run.before.pmText === ONE_PARAGRAPH.paragraphs[0],
+        submitted: run.result?.mode === "submitted",
+        "highlight replaced in the DOM": run.state.text === REPLACED,
+        "highlight replaced in ProseMirror's state": run.state.pmText === REPLACED,
+        "only captured Send pressed, once": run.state.sendClicks === 1 && JSON.stringify(run.state.presses) === JSON.stringify(["Send"])
+      },
+      detail: `${processDetail(run)}; presses=${JSON.stringify(run.state.presses)}; formSubmits=${run.state.formSubmits}`
+    };
+  }
+});
+
+await scenario(browser, {
+  id: "B26", name: "Ctrl+Alt+P with only a caret in the ProseMirror composer: key left to the page", expected: "negative", fixture: "prosemirror-current",
+  run: async (page) => {
+    await typeAndHighlight(page, COMPOSER, { ...ONE_PARAGRAPH, length: 0 });
+    const pressed = await pressProcessSelection(page, { expectMessage: false });
+    const state = await pageState(page, COMPOSER);
+    const selections = await selectionMessages(page);
+    return {
+      checks: { "caret only": pressed.highlighted === "", ...notConsumedChecks(pressed, selections), "draft unchanged": state.pmText === ONE_PARAGRAPH.paragraphs[0] },
+      detail: `pm=${JSON.stringify(state.pmText)}; reachedPage=${JSON.stringify(pressed.reachedPage)}; overlay=${pressed.overlay}; selections=${selections.length}`
+    };
+  }
+});
+
+await scenario(browser, {
+  id: "B27", name: "Ctrl+Alt+P with page text outside the composer highlighted: key left to the page", expected: "negative", fixture: "prosemirror-current",
+  run: async (page) => {
+    await typeAndHighlight(page, COMPOSER, { ...ONE_PARAGRAPH, length: 0 });
+    // Harness addition: ordinary page text, highlighted by a triple click.
+    await page.evaluate(() => document.body.insertAdjacentHTML("afterbegin", '<p id="page-text">Text on the page, outside the composer.</p>'));
+    await page.click("#page-text", { clickCount: 3 });
+    const pressed = await pressProcessSelection(page, { expectMessage: false });
+    const state = await pageState(page, COMPOSER);
+    const selections = await selectionMessages(page);
+    return {
+      checks: {
+        "page text highlighted": pressed.highlighted.trim() === "Text on the page, outside the composer.",
+        ...notConsumedChecks(pressed, selections),
+        "draft unchanged": state.pmText === ONE_PARAGRAPH.paragraphs[0]
+      },
+      detail: `highlighted=${JSON.stringify(pressed.highlighted)}; pm=${JSON.stringify(state.pmText)}; reachedPage=${JSON.stringify(pressed.reachedPage)}; overlay=${pressed.overlay}; selections=${selections.length}`
+    };
+  }
+});
+
+await scenario(browser, {
+  id: "B28", name: "Ctrl+Alt+P with text highlighted in another chatgpt.com field (search textarea): key left to the page", expected: "negative", fixture: "logged-out",
+  run: async (page) => {
+    await typeAndHighlight(page, "#search", { paragraphs: ["search words"], after: 0, length: "words".length });
+    const pressed = await pressProcessSelection(page, { expectMessage: false });
+    const search = await pageState(page, "#search");
+    const state = await pageState(page, "#mobile-composer-prompt");
+    const selections = await selectionMessages(page);
+    return {
+      checks: {
+        "search text highlighted": pressed.highlighted === "words",
+        ...notConsumedChecks(pressed, selections),
+        "search field unchanged": search.text === "search words",
+        "composer untouched": state.text === ""
+      },
+      detail: `highlighted=${JSON.stringify(pressed.highlighted)}; search=${JSON.stringify(search.text)}; reachedPage=${JSON.stringify(pressed.reachedPage)}; overlay=${pressed.overlay}; selections=${selections.length}`
+    };
+  }
+});
+
+await scenario(browser, {
+  id: "B29", name: "Ctrl+Alt+P after an extension reload left the host without a runtime id: key left to ProseMirror", expected: "negative", fixture: "prosemirror-current",
+  run: async (page) => {
+    const orphaned = await page.evaluate(() => {
+      delete chrome.runtime.id;
+      return chrome.runtime.id === undefined;
+    });
+    await typeAndHighlight(page, COMPOSER, ONE_PARAGRAPH);
+    const pressed = await pressProcessSelection(page, { expectMessage: false });
+    const state = await pageState(page, COMPOSER);
+    const selections = await selectionMessages(page);
+    return {
+      checks: {
+        "runtime id gone": orphaned,
+        "phrase highlighted": pressed.highlighted === HIGHLIGHT,
+        ...notConsumedChecks(pressed, selections),
+        "key dispatched at ProseMirror": pressed.reachedPage[0]?.inEditor === true,
+        "draft unchanged": state.pmText === ONE_PARAGRAPH.paragraphs[0]
+      },
+      detail: `highlighted=${JSON.stringify(pressed.highlighted)}; pm=${JSON.stringify(state.pmText)}; reachedPage=${JSON.stringify(pressed.reachedPage)}; overlay=${pressed.overlay}; selections=${selections.length}`
+    };
+  }
+});
+
+// The viewport rect of characters [from, to) of `text` in the field's text, for real mouse input.
+async function textRect(page, field, text, from = 0, to = text.length) {
+  const rect = await page.evaluate(([selector, needle, start, end]) => {
+    const walker = document.createTreeWalker(document.querySelector(selector), NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const index = node.data.indexOf(needle);
+      if (index < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, index + start);
+      range.setEnd(node, index + end);
+      const { left, top, width, height } = range.getBoundingClientRect();
+      return { left, top, width, height };
+    }
+    return null;
+  }, [field, text, from, to]);
+  if (!rect) throw new Error(`${JSON.stringify(text)} is not in one text node of ${field}`);
+  return rect;
+}
+
+const ROUGH = "Rough";
+const ROUGH_REPLACED = "Keep this. Rough draft here. Keep that.";
+
+await scenario(browser, {
+  id: "B30", name: "Ctrl+Alt+P on a word double-clicked in the ProseMirror composer: the space around it is kept", expected: "positive", fixture: "prosemirror-current",
+  run: async (page) => {
+    const run = await processSelectionRun(page, {
+      field: COMPOSER,
+      select: async () => {
+        await typeAndHighlight(page, COMPOSER, { ...ONE_PARAGRAPH, length: 0 });
+        const word = await textRect(page, COMPOSER, "rough");
+        await page.mouse.dblclick(word.left + word.width / 2, word.top + word.height / 2);
+      },
+      resultText: ROUGH
+    });
+    return {
+      checks: {
+        "double-click highlighted the word": /^rough\s?$/.test(run.pressed.highlighted),
+        ...consumedChecks(run, run.pressed.highlighted),
+        submitted: run.result?.mode === "submitted",
+        "word replaced, spaces kept, in the DOM": run.state.text === ROUGH_REPLACED,
+        "word replaced, spaces kept, in ProseMirror's state": run.state.pmText === ROUGH_REPLACED,
+        "pressed once": run.state.sendClicks === 1
+      },
+      detail: `highlighted=${JSON.stringify(run.pressed.highlighted)}; ${processDetail(run)}`
+    };
+  }
+});
+
+await scenario(browser, {
+  id: "B31", name: "Ctrl+Alt+P on \" rough \" highlighted with both spaces in the logged-out textarea composer: spaces kept", expected: "positive", fixture: "logged-out",
+  run: async (page) => {
+    const run = await processSelectionRun(page, {
+      field: "#mobile-composer-prompt",
+      highlight: { paragraphs: ONE_PARAGRAPH.paragraphs, after: "draft here. Keep that.".length, length: " rough ".length },
+      resultText: ROUGH
+    });
+    return {
+      checks: {
+        ...consumedChecks(run, " rough "),
+        "draft untouched by the key": run.before.text === ONE_PARAGRAPH.paragraphs[0],
+        submitted: run.result?.mode === "submitted",
+        "word replaced, spaces kept": run.state.text === ROUGH_REPLACED,
+        "only Send pressed, once, when ready": JSON.stringify(run.state.presses) === JSON.stringify([{ label: "Send message", ready: true }]),
+        "form submitted once": run.state.sendClicks === 1
+      },
+      detail: `${processDetail(run)}; presses=${JSON.stringify(run.state.presses)}`
+    };
+  }
+});
+
+// The draft with one "X" typed somewhere inside the highlighted phrase.
+const editedInsideHighlight = (text) => {
+  const draft = ONE_PARAGRAPH.paragraphs[0];
+  const start = draft.indexOf(HIGHLIGHT);
+  const at = text?.indexOf("X") ?? -1;
+  return at > start && at < start + HIGHLIGHT.length && text.slice(0, at) + text.slice(at + 1) === draft;
+};
+
+await scenario(browser, {
+  id: "B32", name: "Highlighted words edited after Ctrl+Alt+P: result copied, not inserted or submitted", expected: "negative", fixture: "prosemirror-current",
+  run: async (page) => {
+    const run = await processSelectionRun(page, {
+      field: COMPOSER,
+      // Click at the left edge of the "a" in "draft", then type a character there.
+      beforeResult: async () => {
+        const letter = await textRect(page, COMPOSER, "draft", 2, 3);
+        await page.mouse.click(letter.left + 1, letter.top + letter.height / 2);
+        await page.keyboard.type("X");
+      }
+    });
+    const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+    return {
+      checks: {
+        ...consumedChecks(run, HIGHLIGHT),
+        "user's edit inside the highlight": editedInsideHighlight(run.before.pmText),
+        "reported copied": run.result?.ok === false && run.result?.mode === "copied",
+        "composer keeps the edit, nothing inserted": run.state.pmText === run.before.pmText && run.state.text === run.before.pmText,
+        "not submitted": run.state.sendClicks === 0,
+        "clipboard holds the result": clipboard === POLISHED
+      },
+      detail: `${processDetail(run)}; clipboard=${JSON.stringify(clipboard)}`
+    };
+  }
+});
+
 await browser.close();
 
 if (live) {
   const liveBrowser = await chromium.launch({ channel: "chrome", headless: false });
-  const context = await liveBrowser.newContext({ viewport: { width: 1280, height: 900 } });
-  const aborted = [];
-  await context.route("**/*", (route) => {
-    const request = route.request();
-    if (request.method() === "POST" && /conversation/i.test(request.url())) {
-      aborted.push(request.url());
-      return route.abort();
-    }
-    return route.continue();
-  });
-  const page = await context.newPage();
-  try {
+  const LIVE_COMPOSER = "#mobile-composer-prompt, #prompt-textarea, [contenteditable='true'][data-composer-markdown]";
+  // Opens the live chatgpt.com in a fresh context with SaySlate injected. Conversation POSTs are
+  // aborted and listed in `aborted`; a click on the send button and any form submission are
+  // recorded in window.__sendPresses and cancelled, so nothing is sent to ChatGPT.
+  async function openLiveChatGPT() {
+    const context = await liveBrowser.newContext({ viewport: { width: 1280, height: 900 } });
+    const aborted = [];
+    await context.route("**/*", (route) => {
+      const request = route.request();
+      if (request.method() === "POST" && /conversation/i.test(request.url())) {
+        aborted.push(request.url());
+        return route.abort();
+      }
+      return route.continue();
+    });
+    const page = await context.newPage();
     await page.goto("https://chatgpt.com/", { waitUntil: "domcontentloaded", timeout: 60000 });
-    const composer = await page.waitForSelector("#mobile-composer-prompt, #prompt-textarea, [contenteditable='true'][data-composer-markdown]", { timeout: 45000 });
+    const composer = await page.waitForSelector(LIVE_COMPOSER, { timeout: 45000 });
     const composerId = await composer.evaluate((node) => node.id || node.tagName.toLowerCase());
     await page.evaluate(() => {
       window.__sendPresses = [];
@@ -617,16 +1022,21 @@ if (live) {
       window.addEventListener("submit", intercept, true);
     });
     await injectSaySlate(page);
+    return { page, composer, composerId, aborted };
+  }
+
+  try {
+    const { page, composer, composerId, aborted } = await openLiveChatGPT();
     await composer.click();
     const opened = await page.evaluate(() => globalThis.__saySlateSend({ type: "sayslate-toggle-floating" }));
     if (!opened?.ok) throw new Error(`Floating Slate did not open: ${JSON.stringify(opened)}`);
     const result = await page.evaluate((text) => globalThis.__saySlateSend({
       type: "sayslate-host-command", sessionId: globalThis.__saySlateSession, action: "insert-submit", text
     }), TEXT);
-    const state = await page.evaluate(() => {
-      const node = document.querySelector("#mobile-composer-prompt, #prompt-textarea, [contenteditable='true'][data-composer-markdown]");
+    const state = await page.evaluate((selector) => {
+      const node = document.querySelector(selector);
       return { text: ("value" in node ? node.value : node.innerText).trim(), presses: window.__sendPresses };
-    });
+    }, LIVE_COMPOSER);
     await page.screenshot({ path: path.join(process.env.SAYSLATE_EVIDENCE_DIR || ".", "live-chatgpt-after-insert.png") });
     const clickPress = state.presses.find((press) => press.type === "click");
     record("L1", `Live chatgpt.com (logged out, composer ${composerId}), process and submit`, "positive", {
@@ -637,6 +1047,32 @@ if (live) {
     }, `mode=${result?.mode}; message=${JSON.stringify(result?.message)}; presses=${JSON.stringify(state.presses)}; abortedPosts=${aborted.length}`);
   } catch (error) {
     record("L1", "Live chatgpt.com (logged out), process and submit", "positive", { "scenario ran": false }, error.message.split("\n")[0]);
+  }
+
+  try {
+    const { page, composerId, aborted } = await openLiveChatGPT();
+    const readState = async (target) => ({
+      ...(await target.evaluate((selector) => {
+        const node = document.querySelector(selector);
+        return { text: ("value" in node ? node.value : node.innerText).trim(), presses: window.__sendPresses.slice() };
+      }, LIVE_COMPOSER)),
+      aborted: aborted.map((url) => new URL(url).pathname)
+    });
+    const run = await processSelectionRun(page, { field: LIVE_COMPOSER, readState });
+    await page.screenshot({ path: path.join(process.env.SAYSLATE_EVIDENCE_DIR || ".", "live-chatgpt-after-process-selection.png") });
+    const clicks = run.state.presses.filter((press) => press.type === "click");
+    record("L2", `Live chatgpt.com (logged out, composer ${composerId}), Ctrl+Alt+P on a highlighted phrase: replaced and submitted`, "positive", {
+      ...consumedChecks(run, HIGHLIGHT),
+      "draft untouched by the key": run.before.text === ONE_PARAGRAPH.paragraphs[0],
+      submitted: run.result?.mode === "submitted",
+      "highlight replaced in ChatGPT's composer": run.state.text === REPLACED,
+      "send pressed once, enabled by ChatGPT": clicks.length === 1 && clicks[0].ariaDisabled !== "true" && clicks[0].disabled !== true,
+      // chatgpt.com may POST conversation/prepare on page load, before any key or SaySlate
+      // action (seen 2026-10-18); it is aborted like every conversation POST, and is not a send.
+      "nothing sent (no conversation POST but prepare)": run.state.aborted.every((pathname) => /\/conversation\/prepare$/.test(pathname))
+    }, `${processDetail(run)}; presses=${JSON.stringify(run.state.presses)}; abortedAfterKey=${JSON.stringify(run.before.aborted)}; abortedAtEnd=${JSON.stringify(run.state.aborted)}`);
+  } catch (error) {
+    record("L2", "Live chatgpt.com (logged out), Ctrl+Alt+P on a highlighted phrase", "positive", { "scenario ran": false }, error.message.split("\n")[0]);
   } finally {
     await liveBrowser.close();
   }

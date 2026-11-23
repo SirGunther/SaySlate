@@ -22,6 +22,7 @@
   let lastToggleAt = 0;
   let frameReady = false;
   let pendingShortcutKeys = [];
+  let pendingSelectionText = "";
 
   function isEditable(element) {
     if (!(element instanceof Element)) return false;
@@ -69,10 +70,32 @@
         range.selectNodeContents(element);
         range.collapse(false);
       }
-      return { kind: "contenteditable", element, range };
+      return { kind: "contenteditable", element, range, rangeText: range.toString() };
     }
 
     return null;
+  }
+
+  // The text highlighted in a captured target, or "" for a caret. In a contenteditable the
+  // selection's text keeps the rendered line breaks between paragraphs, which the range's drops.
+  function highlightedText(target) {
+    if (target?.kind === "value") return target.element.value.slice(target.start, target.end);
+    if (target?.kind === "contenteditable" && !target.range.collapsed) return getSelection()?.toString() || "";
+    return "";
+  }
+
+  // What Ctrl + Alt + P processes: the text highlighted in ChatGPT's composer, with the target it
+  // replaces and the whitespace at its edges, which stays around the result. Null leaves the key
+  // to the website, including in a copy left running after the extension reloads (no runtime id).
+  function composerSelection(event) {
+    if (host || !chrome.runtime?.id) return null;
+    if (!shortcuts?.isProcessSelectionEvent(event) || !chatGPT?.isChatGPTLocation(location)) return null;
+    const target = captureEditable(activeEditable());
+    if (!chatGPT.isChatGPTComposer(target?.element)) return null;
+    const text = highlightedText(target);
+    if (!text.trim()) return null;
+    target.padding = { lead: text.match(/^\s*/)[0], trail: text.match(/\s*$/)[0] };
+    return { target, text };
   }
 
   function caretRectForValueField(element, offset) {
@@ -183,14 +206,15 @@
   }
 
   function insertIntoContentEditable(target, text) {
-    const { element, range } = target;
-    if (!element.isConnected || !range.startContainer?.isConnected) return false;
+    const { element, range, rangeText } = target;
+    if (!element.isConnected || !range.startContainer?.isConnected || range.toString() !== rangeText) return false;
     element.focus({ preventScroll: true });
     const selection = getSelection();
     selection.removeAllRanges();
     selection.addRange(range);
     if (document.execCommand("insertText", false, text)) {
       if (selection.rangeCount) target.range = selection.getRangeAt(0).cloneRange();
+      target.rangeText = target.range.toString();
       return true;
     }
 
@@ -202,6 +226,7 @@
     selection.removeAllRanges();
     selection.addRange(range);
     target.range = range.cloneRange();
+    target.rangeText = target.range.toString();
     element.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, inputType: "insertText", data: text }));
     return true;
   }
@@ -242,15 +267,20 @@
 
   async function commitText(text) {
     const normalizedText = String(text || "");
+    const padding = capturedTarget?.padding;
+    const insertion = padding ? `${padding.lead}${normalizedText.trim()}${padding.trail}` : normalizedText;
     let inserted = false;
     try {
-      if (capturedTarget?.kind === "value") inserted = insertIntoValueField(capturedTarget, normalizedText);
-      else if (capturedTarget?.kind === "contenteditable") inserted = insertIntoContentEditable(capturedTarget, normalizedText);
+      if (capturedTarget?.kind === "value") inserted = insertIntoValueField(capturedTarget, insertion);
+      else if (capturedTarget?.kind === "contenteditable") inserted = insertIntoContentEditable(capturedTarget, insertion);
     } catch {
       inserted = false;
     }
 
-    if (inserted) return { ok: true, mode: "inserted", message: "Inserted at the saved cursor" };
+    if (inserted) {
+      capturedTarget.padding = null;
+      return { ok: true, mode: "inserted", message: "Inserted at the saved cursor" };
+    }
     const copied = await copyFallback(normalizedText);
     return copied
       ? { ok: true, mode: "copied", message: "The field changed, so the result was copied instead" }
@@ -311,6 +341,7 @@
     anchorRect = null;
     frameReady = false;
     pendingShortcutKeys = [];
+    pendingSelectionText = "";
     oldHost?.remove();
     void unregisterSession();
     sessionId = "";
@@ -318,14 +349,14 @@
     removeEventListener("scroll", positionOverlay, true);
   }
 
-  async function openOverlay() {
+  // Opens on `target` when the caller has already captured it, otherwise on the focused field.
+  async function openOverlay(target) {
     if (host) {
       frame?.contentWindow?.focus();
       return;
     }
 
-    const editable = activeEditable();
-    capturedTarget = captureEditable(editable);
+    capturedTarget = target ?? captureEditable(activeEditable());
     anchorRect = editableAnchorRect(capturedTarget);
     sessionId = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
@@ -357,6 +388,9 @@
     frame.addEventListener("load", () => {
       if (!host || frame !== openingFrame) return;
       frameReady = true;
+      const queuedSelection = pendingSelectionText;
+      pendingSelectionText = "";
+      if (queuedSelection) routeSelectionText(queuedSelection);
       const queuedKeys = pendingShortcutKeys.splice(0);
       for (const key of queuedKeys) routeFloatingShortcut(key);
     }, { once: true });
@@ -403,6 +437,29 @@
     });
   }
 
+  function routeSelectionText(text) {
+    if (!host || !sessionId) return;
+    if (!frameReady) {
+      pendingSelectionText = text;
+      return;
+    }
+    frame?.contentWindow?.focus();
+    const message = shortcuts?.createSelectionMessage(sessionId, text);
+    if (!message) return;
+    void chrome.runtime.sendMessage(message).catch((error) => {
+      console.warn("SaySlate could not hand the highlighted text to Floating Slate.", error);
+    });
+  }
+
+  // Opens Floating Slate on the highlighted composer text and hands it that text to process. The
+  // text goes only to the overlay opened for it, not to one opened after it was closed.
+  async function processSelection({ target, text }) {
+    const opening = openOverlay(target);
+    const openedSessionId = sessionId;
+    await opening;
+    if (sessionId === openedSessionId) routeSelectionText(text);
+  }
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "sayslate-toggle-floating") {
       void toggleOverlay()
@@ -431,6 +488,16 @@
   }, { passive: true });
 
   addEventListener("keydown", (event) => {
+    const selected = composerSelection(event);
+    if (selected) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void processSelection(selected).catch((error) => {
+        console.warn("SaySlate could not open Floating Slate for the highlighted text.", error);
+      });
+      return;
+    }
+
     if (!host || !shortcuts) return;
 
     if (shortcuts.isEscapeEvent(event)) {
