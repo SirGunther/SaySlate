@@ -16,14 +16,17 @@ Project tracking is split between [`ROADMAP.md`](ROADMAP.md), which records feat
 - **Ctrl + Alt + R** — copy the processed result
 - **Ctrl + Alt + F** — finish the full workflow: stop, run pass one, optionally run pass two when enabled, copy the final result, then clear everything
 - **Ctrl + Alt + S** — on ChatGPT only, finish the floating workflow, insert the final result, and submit it
+- **Ctrl + Alt + P** — on ChatGPT only, process the text highlighted in the message composer: run pass one, optionally run pass two when enabled, replace the highlighted text with the final result, and submit it
 
 Inside Floating Slate, **Ctrl + Alt + F** runs the same enabled processing passes in order, inserts the final result at the saved caret, and closes the overlay. If the original field is no longer safe to edit, SaySlate copies the result instead.
 
 On `chatgpt.com`, Floating Slate also shows a dedicated send icon. **Ctrl + Alt + S** or that icon runs the same guarded stages as **Ctrl + Alt + F**, but submits only after the final text is confirmed in the ChatGPT composer and the send button becomes enabled. It waits up to 20 seconds and never submits after a clipboard fallback, changed target, failed processing pass, or unsupported page.
 
+**Ctrl + Alt + P** is the same send for typed text instead of dictation. Highlight text in the ChatGPT message composer, with Floating Slate closed, and press it: Floating Slate opens with the highlighted text, runs the same guarded stages as **Ctrl + Alt + S**, replaces only the highlighted text with the final result, and submits the message. Spaces or line breaks at either edge of the highlight stay in place. If a pass fails, nothing is replaced or submitted and Floating Slate stays open with the reason, so **Ctrl + Alt + S** can retry from the pass that failed or **Escape** can cancel. If the highlighted text was edited while the passes ran, the result is copied instead and nothing is submitted. A ChatGPT tab that was already open when SaySlate was installed or reloaded needs a page refresh before **Ctrl + Alt + P** works there.
+
 The same guarded sequence is available from the dedicated Finish control, whose tooltip spells out every step for new users.
 
-All action shortcuts are designed to be comfortably operated with the left hand. While Floating Slate is open, they control that overlay even after focus returns to the underlying website. When no overlay is open, SaySlate does not consume those website keystrokes.
+All action shortcuts are designed to be comfortably operated with the left hand. While Floating Slate is open, they control that overlay even after focus returns to the underlying website. When no overlay is open, SaySlate does not consume those website keystrokes, with one exception: on ChatGPT, **Ctrl + Alt + P** is taken when text is highlighted in the message composer. Anywhere else, or with nothing highlighted there, it reaches the website unchanged.
 
 The main action bar uses clean icon-only controls. The idle microphone uses the same subdued utility styling as the rest of the toolbar, then changes to a clearly red stop state while listening. Hover over any icon to see its action and keyboard shortcut on separate lines. Tooltips have a viewport-safe maximum width and align inward near screen edges. Stopping by click or shortcut immediately copies the transcript.
 
@@ -64,7 +67,7 @@ On ChatGPT, use **Ctrl + Alt + S** instead when the finished message should be s
 
 The floating toolbar also provides individual controls for dictation, finishing, either AI pass, restoring the dictation, copying, and clearing. Before an AI pass replaces dictated text, Floating Slate saves that text; **Restore dictation** puts it back, even after Floating Slate was closed and opened again. Its status indicator shows listening, retrying, first-pass, second-pass, and insertion progress. Press **Escape** to cancel and close it without inserting. Escape closes Floating Slate first whether keyboard focus is inside the overlay or back on the website.
 
-Floating Slate uses the API key, model, prompts, second-pass setting, and theme saved on the full SaySlate page. It preserves the field and caret that were active when opened. For a selected range, insertion replaces the selection. If the target was removed or changed while processing, SaySlate protects the page content and copies the finished result to the clipboard instead. It submits a message only when the user explicitly invokes the ChatGPT-specific **Ctrl + Alt + S** action or its matching button.
+Floating Slate uses the API key, model, prompts, second-pass setting, and theme saved on the full SaySlate page. It preserves the field and caret that were active when opened. For a selected range, insertion replaces the selection. If the target was removed or changed while processing, SaySlate protects the page content and copies the finished result to the clipboard instead. It submits a message only when the user explicitly invokes the ChatGPT-specific **Ctrl + Alt + S** action, its matching button, or **Ctrl + Alt + P** on highlighted composer text.
 
 Unexpected recoverable speech-recognition interruptions are retried with a short backoff while the user still intends to dictate. Explicit Stop, Clear, Escape, and Finish actions cancel pending retries.
 
